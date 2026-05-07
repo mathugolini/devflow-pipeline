@@ -23,7 +23,14 @@ func (m MetricType) Valid() bool {
 	return false
 }
 
-const reviewTimeMaxMinutes = 1440 // 24h
+const (
+	reviewTimeMaxMinutes = 1440 // 24h
+
+	// AllowedFutureSkew tolerates clock differences between event
+	// producers and the processor. Without it, a producer running a
+	// few seconds ahead would have all its events rejected.
+	AllowedFutureSkew = 5 * time.Minute
+)
 
 // RawEvent is the contract on the raw-events queue.
 type RawEvent struct {
@@ -59,7 +66,7 @@ func (e RawEvent) Validate(now time.Time) error {
 	if e.Timestamp.IsZero() {
 		return newValidationError("timestamp", "is required")
 	}
-	if e.Timestamp.After(now) {
+	if e.Timestamp.After(now.Add(AllowedFutureSkew)) {
 		return newValidationError("timestamp", "cannot be in the future")
 	}
 	return nil
