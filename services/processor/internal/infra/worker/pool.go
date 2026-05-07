@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math/rand"
 	"sync"
+	"time"
 
 	"github.com/mathugolini/devflow-pipeline/services/processor/internal/domain"
 	"github.com/mathugolini/devflow-pipeline/services/processor/internal/infra/queue"
@@ -18,6 +20,17 @@ import (
 type Handler interface {
 	Execute(ctx context.Context, raw domain.RawEvent) error
 }
+
+const (
+	// handlerTimeout caps how long an individual message is allowed to
+	// be processed. Must be smaller than the queue's VisibilityTimeout
+	// (30s) to avoid double-delivery, and smaller than the main's
+	// shutdownGrace so drain finishes in time.
+	handlerTimeout = 25 * time.Second
+
+	receiveBackoffInitial = time.Second
+	receiveBackoffMax     = 30 * time.Second
+)
 
 type Pool struct {
 	consumer *queue.Consumer
@@ -43,7 +56,7 @@ func (p *Pool) Run(ctx context.Context) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			p.workerLoop(ctx, id, jobs)
+			p.workerLoop(id, jobs)
 		}(i)
 	}
 
@@ -53,8 +66,10 @@ func (p *Pool) Run(ctx context.Context) {
 }
 
 // dispatch long-polls SQS and feeds messages into the jobs channel until
-// ctx is cancelled.
+// ctx is cancelled. Receive errors are backed off exponentially with
+// jitter to avoid hot looping when the broker is unavailable.
 func (p *Pool) dispatch(ctx context.Context, jobs chan<- queue.Message) {
+	backoff := receiveBackoffInitial
 	for {
 		if ctx.Err() != nil {
 			return
@@ -64,9 +79,23 @@ func (p *Pool) dispatch(ctx context.Context, jobs chan<- queue.Message) {
 			if ctx.Err() != nil {
 				return
 			}
-			p.log.Error("receive failed", slog.String("err", err.Error()))
+			p.log.Error("receive failed; backing off",
+				slog.Any("err", err),
+				slog.Duration("backoff", backoff),
+			)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff + jitter(backoff)):
+			}
+			backoff *= 2
+			if backoff > receiveBackoffMax {
+				backoff = receiveBackoffMax
+			}
 			continue
 		}
+		backoff = receiveBackoffInitial
+
 		for _, m := range parseFails {
 			id := ""
 			if m.MessageId != nil {
@@ -85,12 +114,15 @@ func (p *Pool) dispatch(ctx context.Context, jobs chan<- queue.Message) {
 	}
 }
 
-func (p *Pool) workerLoop(ctx context.Context, id int, jobs <-chan queue.Message) {
+func (p *Pool) workerLoop(id int, jobs <-chan queue.Message) {
 	for msg := range jobs {
-		// Use a detached background context so an in-flight message can
-		// finish even after the parent ctx is cancelled (graceful drain).
-		// We still respect cancellation upstream via the dispatcher.
-		p.handle(context.Background(), id, msg)
+		// Detached from the shutdown context so a message in flight at
+		// SIGTERM can finish (otherwise SQS would re-deliver and the
+		// downstream queue would see a duplicate). Bounded by
+		// handlerTimeout so a stuck handler cannot block forever.
+		hctx, cancel := context.WithTimeout(context.Background(), handlerTimeout)
+		p.handle(hctx, id, msg)
+		cancel()
 	}
 }
 
@@ -105,7 +137,7 @@ func (p *Pool) handle(ctx context.Context, workerID int, msg queue.Message) {
 	switch {
 	case err == nil:
 		if delErr := p.consumer.Delete(ctx, msg.ReceiptHandle); delErr != nil {
-			logger.Error("delete after success failed", slog.String("err", delErr.Error()))
+			logger.Error("delete after success failed", slog.Any("err", delErr))
 			return
 		}
 		logger.Info("processed")
@@ -113,16 +145,24 @@ func (p *Pool) handle(ctx context.Context, workerID int, msg queue.Message) {
 		// Permanent rejection: do NOT delete. SQS will redrive to DLQ
 		// after maxReceiveCount.
 		logger.Warn("validation failed; leaving for DLQ redrive",
-			slog.String("err", err.Error()))
+			slog.Any("err", err))
 	default:
 		// Transient failure: do NOT delete. SQS visibility timeout will
 		// re-deliver. After maxReceiveCount the DLQ catches it.
 		logger.Error("transient failure; leaving for retry",
-			slog.String("err", err.Error()))
+			slog.Any("err", err))
 	}
 }
 
 func isValidation(err error) bool {
 	var ve *domain.ValidationError
 	return errors.As(err, &ve)
+}
+
+// jitter returns a random duration in [0, d/2) to spread retries.
+func jitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int63n(int64(d) / 2))
 }

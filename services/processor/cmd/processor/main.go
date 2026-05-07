@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -14,24 +15,39 @@ import (
 	"github.com/mathugolini/devflow-pipeline/services/processor/internal/usecase"
 )
 
+// Hard cap on how long we wait for in-flight work to drain after a
+// SIGTERM/SIGINT before forcing exit. Must be larger than the maximum
+// in-flight handler timeout so we never exit while a handler is still
+// processing — but small enough that orchestrators don't SIGKILL us.
+const shutdownGrace = 30 * time.Second
+
 func main() {
+	cfg, cfgErr := config.Load()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: parseLogLevel(cfg.LogLevel),
 	}))
 	slog.SetDefault(logger)
 
-	if err := run(logger); err != nil {
-		logger.Error("fatal", slog.String("err", err.Error()))
+	if cfgErr != nil {
+		logger.Error("config load failed", slog.Any("err", cfgErr))
+		os.Exit(1)
+	}
+
+	if err := run(cfg, logger); err != nil {
+		logger.Error("fatal", slog.Any("err", err))
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger) error {
-	cfg, err := config.Load()
-	if err != nil {
-		return err
+func parseLogLevel(s string) slog.Level {
+	var lvl slog.Level
+	if err := lvl.UnmarshalText([]byte(s)); err != nil {
+		return slog.LevelInfo
 	}
+	return lvl
+}
 
+func run(cfg config.Config, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -40,10 +56,7 @@ func run(log *slog.Logger) error {
 
 	client, err := queue.NewClient(bootCtx, cfg.AWSRegion, cfg.AWSEndpointURL)
 	if err != nil {
-		return err
-	}
-	if err := client.Ping(bootCtx); err != nil {
-		return err
+		return fmt.Errorf("aws client: %w", err)
 	}
 	rawURL, err := client.QueueURL(bootCtx, cfg.RawQueueName)
 	if err != nil {
@@ -65,10 +78,25 @@ func run(log *slog.Logger) error {
 		slog.Int("workers", cfg.Workers),
 		slog.String("raw_queue", cfg.RawQueueName),
 		slog.String("out_queue", cfg.OutQueueName),
+		slog.String("log_level", cfg.LogLevel),
 	)
 
-	pool.Run(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pool.Run(ctx)
+	}()
 
-	log.Info("processor stopped")
-	return nil
+	<-ctx.Done()
+	log.Info("shutdown signal received; draining workers", slog.Duration("grace", shutdownGrace))
+
+	select {
+	case <-done:
+		log.Info("processor stopped cleanly")
+		return nil
+	case <-time.After(shutdownGrace):
+		log.Error("shutdown grace exceeded; forcing exit")
+		os.Exit(2)
+		return nil
+	}
 }
