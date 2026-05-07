@@ -38,9 +38,10 @@ func (uc *ProcessEvent) Execute(ctx context.Context, raw domain.RawEvent) error 
 		return err
 	}
 	processed := domain.ProcessedEvent{
-		RawEvent:    raw,
-		ProcessedAt: now,
-		ProcessorID: uc.processorID,
+		SchemaVersion: domain.CurrentSchemaVersion,
+		RawEvent:      raw,
+		ProcessedAt:   now,
+		ProcessorID:   uc.processorID,
 	}
 	if err := uc.publisher.Publish(ctx, processed); err != nil {
 		return fmt.Errorf("publish processed event: %w", err)
