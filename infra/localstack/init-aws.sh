@@ -77,7 +77,48 @@ create_table() {
   echo "[init-aws] created table $name"
 }
 
-create_table "events" "event_id"
+# events has both a primary HASH on event_id and a GSI on developer_id
+# (developer_id-index) so the API can Query by developer without Scan.
+create_events_table() {
+  if aws_ddb describe-table --table-name "events" >/dev/null 2>&1; then
+    echo "[init-aws] table events already exists"
+    return
+  fi
+  aws_ddb create-table \
+    --table-name "events" \
+    --attribute-definitions \
+        AttributeName=event_id,AttributeType=S \
+        AttributeName=developer_id,AttributeType=S \
+    --key-schema AttributeName=event_id,KeyType=HASH \
+    --global-secondary-indexes '[{
+      "IndexName": "developer_id-index",
+      "KeySchema": [{"AttributeName":"developer_id","KeyType":"HASH"}],
+      "Projection": {"ProjectionType":"ALL"}
+    }]' \
+    --billing-mode PAY_PER_REQUEST >/dev/null
+  echo "[init-aws] created table events with developer_id-index GSI"
+}
+
+enable_ttl() {
+  local name="$1"
+  local attr="$2"
+  local current
+  current=$(aws_ddb describe-time-to-live --table-name "$name" \
+      --query 'TimeToLiveDescription.TimeToLiveStatus' --output text 2>/dev/null || echo "")
+  if [ "$current" = "ENABLED" ] || [ "$current" = "ENABLING" ]; then
+    echo "[init-aws] TTL on $name already $current"
+    return
+  fi
+  if ! aws_ddb update-time-to-live --table-name "$name" \
+      --time-to-live-specification "Enabled=true,AttributeName=$attr" >/dev/null 2>&1; then
+    echo "[init-aws] TTL update on $name returned non-zero (probably already on); continuing"
+    return
+  fi
+  echo "[init-aws] TTL enabled on $name (attr=$attr)"
+}
+
+create_events_table
 create_table "developer_summary" "developer_id"
+enable_ttl "events" "expires_at"
 
 echo "[init-aws] done"

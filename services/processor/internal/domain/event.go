@@ -81,8 +81,14 @@ func (e RawEvent) Validate(now time.Time) error {
 	return nil
 }
 
+// CurrentSchemaVersion is stamped on every ProcessedEvent the processor
+// publishes. The aggregator validates this and DLQs unsupported versions.
+// See docs/phase-3-decisions.md (D1).
+const CurrentSchemaVersion = 1
+
 // ProcessedEvent is the contract on the processed-events queue.
 type ProcessedEvent struct {
+	SchemaVersion int `json:"schema_version"`
 	RawEvent
 	ProcessedAt time.Time `json:"processed_at"`
 	ProcessorID string    `json:"processor_id"`
