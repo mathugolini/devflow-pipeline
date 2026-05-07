@@ -9,8 +9,8 @@ Dois serviços comunicando via SQS, persistindo em DynamoDB, expostos via API RE
 
 ## Status atual
 
-- [x] Fase 1 — Infra (LocalStack + provisionamento automático de SQS/DynamoDB)
-- [ ] Fase 2 — Processor
+- [x] Fase 1 — Infra (LocalStack + provisionamento automático de SQS/DynamoDB) — [doc](docs/phase-1-infrastructure.md)
+- [x] Fase 2 — Processor (validação, worker pool, graceful shutdown, Dockerfile distroless) — [doc](docs/phase-2-processor.md)
 - [ ] Fase 3 — Aggregator
 - [ ] Fase 4 — Dockerfiles multi-stage + integração no compose
 - [ ] Fase 5 — Testes
