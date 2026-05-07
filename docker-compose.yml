@@ -36,6 +36,29 @@ services:
       - devflow
     restart: "no"
 
+  processor:
+    build:
+      context: ./services/processor
+      dockerfile: Dockerfile
+    container_name: devflow-processor
+    depends_on:
+      aws-init:
+        condition: service_completed_successfully
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_REGION=us-east-1
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - RAW_EVENTS_QUEUE=raw-events
+      - PROCESSED_EVENTS_QUEUE=processed-events
+      - PROCESSOR_ID=processor-1
+      - PROCESSOR_WORKERS=5
+      - SQS_WAIT_TIME_SECONDS=10
+      - LOG_LEVEL=info
+    networks:
+      - devflow
+    restart: unless-stopped
+
 networks:
   devflow:
     driver: bridge
