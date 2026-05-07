@@ -41,8 +41,10 @@ func TestRawEvent_Validate(t *testing.T) {
 			e.Value = 1440
 		}, wantErr: false},
 		{name: "missing timestamp", mutate: func(e *RawEvent) { e.Timestamp = time.Time{} }, wantErr: true, field: "timestamp"},
-		{name: "future timestamp", mutate: func(e *RawEvent) { e.Timestamp = now.Add(time.Hour) }, wantErr: true, field: "timestamp"},
+		{name: "far future timestamp", mutate: func(e *RawEvent) { e.Timestamp = now.Add(time.Hour) }, wantErr: true, field: "timestamp"},
 		{name: "timestamp equals now", mutate: func(e *RawEvent) { e.Timestamp = now }, wantErr: false},
+		{name: "timestamp inside skew window", mutate: func(e *RawEvent) { e.Timestamp = now.Add(AllowedFutureSkew - time.Second) }, wantErr: false},
+		{name: "timestamp just outside skew window", mutate: func(e *RawEvent) { e.Timestamp = now.Add(AllowedFutureSkew + time.Second) }, wantErr: true, field: "timestamp"},
 	}
 
 	for _, tc := range tests {
