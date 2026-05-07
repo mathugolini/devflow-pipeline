@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"math/rand"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -79,14 +80,19 @@ func (p *Pool) dispatch(ctx context.Context, jobs chan<- queue.Message) {
 			if ctx.Err() != nil {
 				return
 			}
+			wait := backoff + jitter(backoff)
 			p.log.Error("receive failed; backing off",
 				slog.Any("err", err),
-				slog.Duration("backoff", backoff),
+				slog.Duration("wait", wait),
 			)
+			t := time.NewTimer(wait)
 			select {
 			case <-ctx.Done():
+				if !t.Stop() {
+					<-t.C
+				}
 				return
-			case <-time.After(backoff + jitter(backoff)):
+			case <-t.C:
 			}
 			backoff *= 2
 			if backoff > receiveBackoffMax {
@@ -116,14 +122,34 @@ func (p *Pool) dispatch(ctx context.Context, jobs chan<- queue.Message) {
 
 func (p *Pool) workerLoop(id int, jobs <-chan queue.Message) {
 	for msg := range jobs {
-		// Detached from the shutdown context so a message in flight at
-		// SIGTERM can finish (otherwise SQS would re-deliver and the
-		// downstream queue would see a duplicate). Bounded by
-		// handlerTimeout so a stuck handler cannot block forever.
-		hctx, cancel := context.WithTimeout(context.Background(), handlerTimeout)
-		p.handle(hctx, id, msg)
-		cancel()
+		p.runOne(id, msg)
 	}
+}
+
+// runOne wraps a single message handle in a panic-recovery boundary so
+// one bad message cannot crash a worker goroutine. A crashed worker
+// would not call wg.Done(), and after enough panics the pool would
+// silently degrade to zero workers and shutdown would hang.
+func (p *Pool) runOne(id int, msg queue.Message) {
+	defer func() {
+		if r := recover(); r != nil {
+			p.log.Error("worker panic recovered",
+				slog.Any("panic", r),
+				slog.String("event_id", msg.Event.EventID),
+				slog.String("message_id", msg.MessageID),
+				slog.Int("worker", id),
+				slog.String("stack", string(debug.Stack())),
+			)
+			// Don't delete — let SQS redrive to DLQ after maxReceiveCount.
+		}
+	}()
+	// Detached from the shutdown context so a message in flight at
+	// SIGTERM can finish (otherwise SQS would re-deliver and the
+	// downstream queue would see a duplicate). Bounded by
+	// handlerTimeout so a stuck handler cannot block forever.
+	hctx, cancel := context.WithTimeout(context.Background(), handlerTimeout)
+	defer cancel()
+	p.handle(hctx, id, msg)
 }
 
 func (p *Pool) handle(ctx context.Context, workerID int, msg queue.Message) {
