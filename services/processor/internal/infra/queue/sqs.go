@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -87,7 +88,12 @@ func (c *Consumer) Receive(ctx context.Context) (msgs []Message, parseFailures [
 	}
 	for _, m := range out.Messages {
 		var ev domain.RawEvent
-		if err := json.Unmarshal([]byte(*m.Body), &ev); err != nil {
+		dec := json.NewDecoder(strings.NewReader(*m.Body))
+		// Strict mode: reject unknown fields. Catches schema drift between
+		// the producer's contract and the consumer's struct early instead
+		// of silently dropping data.
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&ev); err != nil {
 			parseFailures = append(parseFailures, m)
 			continue
 		}
