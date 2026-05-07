@@ -36,6 +36,34 @@ services:
       - devflow
     restart: "no"
 
+  aggregator:
+    build:
+      context: ./services/aggregator
+      dockerfile: Dockerfile
+    container_name: devflow-aggregator
+    depends_on:
+      aws-init:
+        condition: service_completed_successfully
+      localstack:
+        condition: service_healthy
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_REGION=us-east-1
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - PROCESSED_EVENTS_QUEUE=processed-events
+      - EVENTS_TABLE=events
+      - SUMMARY_TABLE=developer_summary
+      - AGGREGATOR_WORKERS=5
+      - SQS_WAIT_TIME_SECONDS=10
+      - HTTP_ADDR=:8080
+      - LOG_LEVEL=info
+    ports:
+      - "8080:8080"
+    networks:
+      - devflow
+    restart: unless-stopped
+
   processor:
     build:
       context: ./services/processor

@@ -12,7 +12,7 @@ AWS := docker run --rm --network devflow-pipeline_devflow \
   amazon/aws-cli:2.17.0 --endpoint-url=http://localstack:4566 --region us-east-1
 endif
 
-.PHONY: help up up-infra down logs ps verify-infra test-processor build-processor send-test send-bad clean
+.PHONY: help up up-infra down logs ps verify-infra test-processor build-processor send-test send-bad clean test-aggregator build-aggregator logs-aggregator curl-summary curl-events seed
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?##"};{printf "  %-18s %s\n", $$1, $$2}'
@@ -21,8 +21,8 @@ up-infra: ## Start LocalStack and provision SQS/DynamoDB
 	docker compose up -d localstack
 	docker compose run --rm aws-init
 
-up: up-infra ## Start everything (infra + processor)
-	docker compose up -d --build processor
+up: up-infra ## Start everything (infra + processor + aggregator)
+	docker compose up -d --build processor aggregator
 
 down: ## Stop and remove containers
 	docker compose down -v
@@ -68,3 +68,22 @@ send-bad: ## Send an invalid event (will end up in raw-events-dlq after 3 attemp
 
 clean: down ## Tear down everything
 	rm -rf .localstack volume bin
+
+test-aggregator: ## Run unit tests for the aggregator service
+	cd services/aggregator && go test ./...
+
+build-aggregator: ## Build the aggregator binary locally
+	cd services/aggregator && go build -o ../../bin/aggregator ./cmd/aggregator
+
+logs-aggregator: ## Tail aggregator logs
+	docker compose logs -f aggregator
+
+DEV ?= dev-1
+curl-summary: ## curl GET /metrics/$DEV/summary  (override: make curl-summary DEV=dev-2)
+	curl -sS http://localhost:8080/metrics/$(DEV)/summary | (command -v jq >/dev/null && jq . || cat); echo
+
+curl-events: ## curl GET /metrics/$DEV
+	curl -sS http://localhost:8080/metrics/$(DEV) | (command -v jq >/dev/null && jq . || cat); echo
+
+seed: ## Seed >= 20 mixed events (valid + invalid + duplicates)
+	bash scripts/seed.sh
