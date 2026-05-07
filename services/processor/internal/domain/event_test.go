@@ -1,9 +1,12 @@
 package domain
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
+
+func stringOf(n int) string { return strings.Repeat("x", n) }
 
 func validEvent(now time.Time) RawEvent {
 	return RawEvent{
@@ -45,6 +48,15 @@ func TestRawEvent_Validate(t *testing.T) {
 		{name: "timestamp equals now", mutate: func(e *RawEvent) { e.Timestamp = now }, wantErr: false},
 		{name: "timestamp inside skew window", mutate: func(e *RawEvent) { e.Timestamp = now.Add(AllowedFutureSkew - time.Second) }, wantErr: false},
 		{name: "timestamp just outside skew window", mutate: func(e *RawEvent) { e.Timestamp = now.Add(AllowedFutureSkew + time.Second) }, wantErr: true, field: "timestamp"},
+		{name: "developer_id at boundary", mutate: func(e *RawEvent) {
+			e.DeveloperID = stringOf(128)
+		}, wantErr: false},
+		{name: "developer_id over limit", mutate: func(e *RawEvent) {
+			e.DeveloperID = stringOf(129)
+		}, wantErr: true, field: "developer_id"},
+		{name: "repository over limit", mutate: func(e *RawEvent) {
+			e.Repository = stringOf(257)
+		}, wantErr: true, field: "repository"},
 	}
 
 	for _, tc := range tests {

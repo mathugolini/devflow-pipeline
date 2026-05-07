@@ -163,9 +163,23 @@ Cada serviço tem seu próprio `go.mod`. O Aggregator (Fase 3) **não vai import
 4. `aws sqs get-queue-attributes` na `processed-events` mostra contador > 0.
 5. `docker compose logs processor` mostra log JSON com `event_id` correlacionado.
 
+## Hardening aplicado pós-revisão
+
+Após a revisão documentada em [security-and-review.md](security-and-review.md), os 5 itens de severidade alta foram corrigidos:
+
+| ID | Correção |
+| --- | --- |
+| **A3** | Backoff exponencial com jitter no `Receive` (1s → 30s) — evita hot loop quando o broker está fora |
+| **A4** | Graceful shutdown com timeout duro de 30s + `handlerTimeout` de 25s por mensagem (menor que `VisibilityTimeout`) |
+| **A5** | `LOG_LEVEL` agora é efetivamente aplicado via `slog.Level.UnmarshalText` |
+| **A6** | Limites de tamanho em `developer_id` (128) e `repository` (256) — defesa contra DoS |
+| **M1** | `PROCESSOR_ID` default = `os.Hostname()` — réplicas se identificam unicamente |
+
+Bonus: `slog.Any` substituiu `slog.String` em logs de erro (preserva chain de wrapping); `Ping` removido em favor de `GetQueueUrl` da fila real.
+
 ## Testes
 
-- **Domínio**: 12 casos de validação cobrindo todas as regras do case (UUID, vazio, enum, negativos, boundary 1440, futuro, zero).
+- **Domínio**: 14 casos de validação cobrindo todas as regras do case (UUID, vazio, enum, negativos, boundary 1440, futuro, zero, skew window, max length).
 - **Use case**: sucesso, erro de validação não chama publisher, erro de publish é envelopado mas não classificado como validação.
 - **Não tem testes de integração com LocalStack.** Decisão: para o prazo, mocks são suficientes. Validação real é via `make send-test` no fluxo end-to-end.
 

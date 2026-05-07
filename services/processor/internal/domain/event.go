@@ -30,6 +30,9 @@ const (
 	// producers and the processor. Without it, a producer running a
 	// few seconds ahead would have all its events rejected.
 	AllowedFutureSkew = 5 * time.Minute
+
+	maxDeveloperIDLen = 128
+	maxRepositoryLen  = 256
 )
 
 // RawEvent is the contract on the raw-events queue.
@@ -53,6 +56,12 @@ func (e RawEvent) Validate(now time.Time) error {
 	}
 	if strings.TrimSpace(e.DeveloperID) == "" {
 		return newValidationError("developer_id", "is required")
+	}
+	if len(e.DeveloperID) > maxDeveloperIDLen {
+		return newValidationError("developer_id", "exceeds 128 chars")
+	}
+	if len(e.Repository) > maxRepositoryLen {
+		return newValidationError("repository", "exceeds 256 chars")
 	}
 	if !e.MetricType.Valid() {
 		return newValidationError("metric_type", "must be one of commits|pull_requests|review_time_minutes")

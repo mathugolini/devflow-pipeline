@@ -51,7 +51,8 @@ services:
       - AWS_ENDPOINT_URL=http://localstack:4566
       - RAW_EVENTS_QUEUE=raw-events
       - PROCESSED_EVENTS_QUEUE=processed-events
-      - PROCESSOR_ID=processor-1
+      # PROCESSOR_ID intentionally unset → defaults to the container
+      # hostname so multi-replica setups self-identify in logs.
       - PROCESSOR_WORKERS=5
       - SQS_WAIT_TIME_SECONDS=10
       - LOG_LEVEL=info
