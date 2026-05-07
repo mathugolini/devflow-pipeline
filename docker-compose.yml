@@ -1,0 +1,41 @@
+services:
+  localstack:
+    image: localstack/localstack:3.8
+    container_name: devflow-localstack
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=sqs,dynamodb
+      - DEBUG=0
+      - AWS_DEFAULT_REGION=us-east-1
+      - PERSISTENCE=0
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks:
+      - devflow
+
+  aws-init:
+    image: amazon/aws-cli:2.17.0
+    container_name: devflow-aws-init
+    depends_on:
+      localstack:
+        condition: service_healthy
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_REGION=us-east-1
+      - AWS_ENDPOINT_URL=http://localstack:4566
+    entrypoint: ["/bin/bash", "/init/init-aws.sh"]
+    volumes:
+      - ./infra/localstack/init-aws.sh:/init/init-aws.sh:ro
+    networks:
+      - devflow
+    restart: "no"
+
+networks:
+  devflow:
+    driver: bridge
