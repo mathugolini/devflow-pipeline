@@ -4,6 +4,12 @@
 # Or with refresh: watch -n 2 -c bash scripts/dashboard.sh
 set -uo pipefail
 
+# Run with --loop (or LOOP=1) to auto-refresh every 2s, no external `watch` needed.
+LOOP="${LOOP:-0}"
+INTERVAL="${INTERVAL:-2}"
+[ "${1:-}" = "--loop" ] && LOOP=1
+[ "${1:-}" = "--once" ] && LOOP=0
+
 ENDPOINT="${ENDPOINT:-http://localhost:4566}"
 API="${API:-http://localhost:8080}"
 
@@ -50,6 +56,7 @@ color_dlq() {
   else echo "${C_RED}${C_BLD}$n${C_RST}"; fi
 }
 
+render() {
 clear
 echo "${C_BLD}${C_BLU}┌─ DevFlow Pipeline Dashboard ─ $(date +%T) ───────────────────┐${C_RST}"
 
@@ -95,5 +102,18 @@ aws_cmd dynamodb scan --table-name developer_summary \
   | sort -k3 -t= -nr | head -8
 
 echo
-echo "${C_DIM}  refresh: watch -n 2 -c bash scripts/dashboard.sh${C_RST}"
+if [ "$LOOP" = "1" ]; then
+  echo "${C_DIM}  Ctrl+C pra sair  ·  refresh ${INTERVAL}s${C_RST}"
+else
+  echo "${C_DIM}  refresh: bash scripts/dashboard.sh --loop  (ou: make watch)${C_RST}"
+fi
 echo "${C_BLD}${C_BLU}└──────────────────────────────────────────────────────────────┘${C_RST}"
+}
+
+if [ "$LOOP" = "1" ]; then
+  trap 'tput cnorm 2>/dev/null; exit 0' INT TERM
+  tput civis 2>/dev/null
+  while true; do render; sleep "$INTERVAL"; done
+else
+  render
+fi

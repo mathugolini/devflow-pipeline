@@ -94,9 +94,8 @@ stress: ## Interactive stress / failure-scenario menu
 dashboard: ## One-shot snapshot of queues + tables + top devs
 	bash scripts/dashboard.sh
 
-watch: ## Live-refreshing dashboard (Ctrl+C to exit)
-	@command -v watch >/dev/null || { echo "install 'watch' (brew install watch)"; exit 1; }
-	watch -n 2 -c bash scripts/dashboard.sh
+watch: ## Live-refreshing dashboard (Ctrl+C to exit) — no external 'watch' needed
+	bash scripts/dashboard.sh --loop
 
 tools: ## Start visual tools (DynamoDB Admin at http://localhost:8001)
 	docker compose --profile tools up -d
