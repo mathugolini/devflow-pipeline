@@ -205,11 +205,12 @@ scenario_5() {
   info "(Espalha entre N developers para evitar serialização do LocalStack na mesma partition key)"
   wait_for_drain 60 || true; echo
   local start; start=$(date +%s)
+  local ts; ts=$(now)  # compute container timestamp ONCE; reuse across the burst
   for i in $(seq 1 "$N"); do
     local eid; eid=$(uuid)
     local dev_idx=$(( (i % DEVS) + 1 ))
     local dev="dev-burst-${dev_idx}"
-    send_raw "$(printf '{"event_id":"%s","developer_id":"%s","metric_type":"commits","value":1,"repository":"o/r","timestamp":"%s"}' "$eid" "$dev" "$(now)")" &
+    send_raw "$(printf '{"event_id":"%s","developer_id":"%s","metric_type":"commits","value":1,"repository":"o/r","timestamp":"%s"}' "$eid" "$dev" "$ts")" &
     if (( i % 25 == 0 )); then wait; fi
   done; wait
   local timeout=$(( N + 60 ))
@@ -238,10 +239,11 @@ scenario_6() {
   banner 6 "Crash do aggregator + redelivery" \
     "Mata o container no meio; após restart, idempotência deve segurar (espalhado em ${DEVS} devs)."
   wait_for_drain 60 || true; echo
+  local ts; ts=$(now)
   for i in $(seq 1 "$N"); do
     local eid; eid=$(uuid)
     local dev="dev-crash-$(( (i % DEVS) + 1 ))"
-    send_raw "$(printf '{"event_id":"%s","developer_id":"%s","metric_type":"commits","value":1,"repository":"o/r","timestamp":"%s"}' "$eid" "$dev" "$(now)")" &
+    send_raw "$(printf '{"event_id":"%s","developer_id":"%s","metric_type":"commits","value":1,"repository":"o/r","timestamp":"%s"}' "$eid" "$dev" "$ts")" &
     (( i % 10 == 0 )) && wait
   done; wait
   sleep 2
@@ -274,10 +276,11 @@ scenario_7() {
   banner 7 "Graceful shutdown drena workers" \
     "SIGTERM via 'docker stop' enquanto há trabalho — drena, não perde, não duplica (${DEVS} devs)."
   wait_for_drain 60 || true; echo
+  local ts; ts=$(now)
   for i in $(seq 1 "$N"); do
     local eid; eid=$(uuid)
     local dev="dev-grace-$(( (i % DEVS) + 1 ))"
-    send_raw "$(printf '{"event_id":"%s","developer_id":"%s","metric_type":"commits","value":1,"repository":"o/r","timestamp":"%s"}' "$eid" "$dev" "$(now)")" &
+    send_raw "$(printf '{"event_id":"%s","developer_id":"%s","metric_type":"commits","value":1,"repository":"o/r","timestamp":"%s"}' "$eid" "$dev" "$ts")" &
     (( i % 10 == 0 )) && wait
   done; wait
   sleep 1
