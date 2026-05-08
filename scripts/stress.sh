@@ -37,7 +37,14 @@ else
 fi
 
 uuid() { uuidgen | tr 'A-Z' 'a-z'; }
-now()  { date -u +%FT%TZ; }
+# Use a timestamp ~60s in the past. Avoids spurious "timestamp in the future"
+# rejections caused by Docker Desktop VM clock drift after the host laptop sleeps.
+# BSD date (macOS) uses -v; GNU date (Linux) uses -d.
+now() {
+  date -u -v-60S +%FT%TZ 2>/dev/null \
+    || date -u -d '-60 seconds' +%FT%TZ 2>/dev/null \
+    || date -u +%FT%TZ
+}
 
 send_raw() {
   aws_cmd sqs send-message --queue-url "$QUEUE_RAW" --message-body "$1" >/dev/null
