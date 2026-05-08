@@ -88,6 +88,34 @@ services:
       - devflow
     restart: unless-stopped
 
+  # ────────────────────────────────────────────────────────────────────
+  # Visual tools — opt-in via `--profile tools` so they don't slow the
+  # default `docker-compose up`. Run with: `docker compose --profile tools up -d`
+  # or `make tools`.
+  # ────────────────────────────────────────────────────────────────────
+
+  # DynamoDB Admin GUI → http://localhost:8001
+  dynamodb-admin:
+    image: aaronshaf/dynamodb-admin:latest
+    container_name: devflow-dynamodb-admin
+    profiles: ["tools"]
+    depends_on:
+      localstack:
+        condition: service_healthy
+    environment:
+      - DYNAMO_ENDPOINT=http://localstack:4566
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+    ports:
+      - "8001:8001"
+    networks:
+      - devflow
+
+  # SQS depth: visualized via `make watch` (see Makefile). Pure-CLI
+  # `watch` of queue sizes turned out friendlier than any open-source
+  # SQS GUI I trust against LocalStack. Keep it simple.
+
 networks:
   devflow:
     driver: bridge
