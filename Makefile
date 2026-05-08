@@ -104,5 +104,6 @@ tools: ## Start visual tools (DynamoDB Admin at http://localhost:8001)
 	@echo "  ➜ Live dashboard:  make watch"
 	@echo
 
-tools-down: ## Stop visual tools
-	docker compose --profile tools down
+tools-down: ## Stop only visual tools (keeps localstack/processor/aggregator running)
+	docker compose stop dynamodb-admin || true
+	docker compose rm -f dynamodb-admin || true
