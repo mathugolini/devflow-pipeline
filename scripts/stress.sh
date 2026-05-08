@@ -182,41 +182,49 @@ scenario_4() {
 
 scenario_5() {
   local N="${BURST_N:-50}"
-  banner 5 "Throughput burst — ${N} mensagens" \
-    "Prova que o worker pool não perde mensagens (BURST_N=200 para testar pesado)."
-  info "(Nota: LocalStack serializa TransactWriteItems na mesma partition key; ~0.5–1s por op."
-  info " Em AWS real um burst de 200 levaria poucos segundos. Override: BURST_N=200 make stress 5)"
+  local DEVS="${BURST_DEVS:-10}"
+  banner 5 "Throughput burst — ${N} mensagens em ${DEVS} developers" \
+    "Prova que o worker pool não perde mensagens. (Override: BURST_N=200 BURST_DEVS=20)"
+  info "(Espalha entre N developers para evitar serialização do LocalStack na mesma partition key)"
   wait_for_drain 60 || true; echo
   local start; start=$(date +%s)
   for i in $(seq 1 "$N"); do
     local eid; eid=$(uuid)
-    send_raw "$(printf '{"event_id":"%s","developer_id":"dev-burst","metric_type":"commits","value":1,"repository":"o/r","timestamp":"%s"}' "$eid" "$(now)")" &
+    local dev_idx=$(( (i % DEVS) + 1 ))
+    local dev="dev-burst-${dev_idx}"
+    send_raw "$(printf '{"event_id":"%s","developer_id":"%s","metric_type":"commits","value":1,"repository":"o/r","timestamp":"%s"}' "$eid" "$dev" "$(now)")" &
     if (( i % 25 == 0 )); then wait; fi
   done; wait
-  local timeout=$(( N * 2 + 60 ))
+  local timeout=$(( N + 60 ))
   info "Send levou $(( $(date +%s) - start ))s. Aguardando agregação (até ${timeout}s)..."
-  local n=0
+  local total_n=0
   local iters=$(( timeout / 2 ))
   for i in $(seq 1 "$iters"); do
-    n=$(summary_field dev-burst events_processed)
-    printf "\r  ${C_DIM}events_processed=%s (t=%ds)${C_RST}" "$n" "$((i*2))"
-    [ "$n" = "$N" ] && break
+    total_n=0
+    for d in $(seq 1 "$DEVS"); do
+      local nd; nd=$(summary_field "dev-burst-${d}" events_processed)
+      total_n=$(( total_n + nd ))
+    done
+    printf "\r  ${C_DIM}eventos agregados (soma %s devs): %s/%s (t=%ds)${C_RST}" "$DEVS" "$total_n" "$N" "$((i*2))"
+    [ "$total_n" = "$N" ] && break
     sleep 2
   done
   echo
   local total; total=$(( $(date +%s) - start ))
-  assert_eq "$n" "$N" "todas as ${N} mensagens agregadas"
+  assert_eq "$total_n" "$N" "soma agregada bate com ${N} mensagens enviadas"
   info "tempo total: ${total}s ($(awk "BEGIN{printf \"%.1f\", $N/($total+0.001)}") msg/s)"
 }
 
 scenario_6() {
-  local N="${CRASH_N:-25}"
+  local N="${CRASH_N:-30}"
+  local DEVS="${CRASH_DEVS:-10}"
   banner 6 "Crash do aggregator + redelivery" \
-    "Mata o container no meio do processamento; após restart, idempotência deve segurar a contagem."
+    "Mata o container no meio; após restart, idempotência deve segurar (espalhado em ${DEVS} devs)."
   wait_for_drain 60 || true; echo
   for i in $(seq 1 "$N"); do
     local eid; eid=$(uuid)
-    send_raw "$(printf '{"event_id":"%s","developer_id":"dev-crash","metric_type":"commits","value":1,"repository":"o/r","timestamp":"%s"}' "$eid" "$(now)")" &
+    local dev="dev-crash-$(( (i % DEVS) + 1 ))"
+    send_raw "$(printf '{"event_id":"%s","developer_id":"%s","metric_type":"commits","value":1,"repository":"o/r","timestamp":"%s"}' "$eid" "$dev" "$(now)")" &
     (( i % 10 == 0 )) && wait
   done; wait
   sleep 2
@@ -225,46 +233,56 @@ scenario_6() {
   sleep 3
   info "subindo de novo..."
   docker compose up -d aggregator >/dev/null 2>&1
-  local timeout=$(( N * 3 + 60 ))
+  local timeout=$(( N + 90 ))
   info "Aguardando recovery (até ${timeout}s)..."
-  local n=0
+  local total_n=0
   local iters=$(( timeout / 2 ))
   for i in $(seq 1 "$iters"); do
     sleep 2
-    n=$(summary_field dev-crash events_processed)
-    printf "\r  ${C_DIM}events_processed=%s (t=%ds)${C_RST}" "$n" "$((i*2))"
-    [ "$n" = "$N" ] && break
+    total_n=0
+    for d in $(seq 1 "$DEVS"); do
+      local nd; nd=$(summary_field "dev-crash-${d}" events_processed)
+      total_n=$(( total_n + nd ))
+    done
+    printf "\r  ${C_DIM}soma agregada: %s/%s (t=%ds)${C_RST}" "$total_n" "$N" "$((i*2))"
+    [ "$total_n" = "$N" ] && break
   done
   echo
-  assert_eq "$n" "$N" "todas as ${N} mensagens contabilizadas exatamente 1×"
+  assert_eq "$total_n" "$N" "todas as ${N} mensagens contabilizadas exatamente 1×"
 }
 
 scenario_7() {
-  local N="${GRACE_N:-25}"
+  local N="${GRACE_N:-30}"
+  local DEVS="${GRACE_DEVS:-10}"
   banner 7 "Graceful shutdown drena workers" \
-    "SIGTERM via 'docker stop' enquanto há trabalho — drena, não perde, não duplica."
+    "SIGTERM via 'docker stop' enquanto há trabalho — drena, não perde, não duplica (${DEVS} devs)."
   wait_for_drain 60 || true; echo
   for i in $(seq 1 "$N"); do
     local eid; eid=$(uuid)
-    send_raw "$(printf '{"event_id":"%s","developer_id":"dev-graceful","metric_type":"commits","value":1,"repository":"o/r","timestamp":"%s"}' "$eid" "$(now)")" &
+    local dev="dev-grace-$(( (i % DEVS) + 1 ))"
+    send_raw "$(printf '{"event_id":"%s","developer_id":"%s","metric_type":"commits","value":1,"repository":"o/r","timestamp":"%s"}' "$eid" "$dev" "$(now)")" &
     (( i % 10 == 0 )) && wait
   done; wait
   sleep 1
   info "docker stop (SIGTERM)..."
   docker stop devflow-aggregator >/dev/null
   docker compose up -d aggregator >/dev/null 2>&1
-  local timeout=$(( N * 3 + 60 ))
+  local timeout=$(( N + 90 ))
   info "Aguardando convergência (até ${timeout}s)..."
-  local n=0
+  local total_n=0
   local iters=$(( timeout / 2 ))
   for i in $(seq 1 "$iters"); do
     sleep 2
-    n=$(summary_field dev-graceful events_processed)
-    printf "\r  ${C_DIM}events_processed=%s (t=%ds)${C_RST}" "$n" "$((i*2))"
-    [ "$n" = "$N" ] && break
+    total_n=0
+    for d in $(seq 1 "$DEVS"); do
+      local nd; nd=$(summary_field "dev-grace-${d}" events_processed)
+      total_n=$(( total_n + nd ))
+    done
+    printf "\r  ${C_DIM}soma agregada: %s/%s (t=%ds)${C_RST}" "$total_n" "$N" "$((i*2))"
+    [ "$total_n" = "$N" ] && break
   done
   echo
-  assert_eq "$n" "$N" "${N} mensagens contabilizadas após shutdown gracioso"
+  assert_eq "$total_n" "$N" "${N} mensagens contabilizadas após shutdown gracioso"
 }
 
 scenario_8() {
