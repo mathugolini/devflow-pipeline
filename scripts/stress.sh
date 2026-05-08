@@ -88,13 +88,27 @@ scenario_1() {
     "Mesma event_id enviada 20× em paralelo → deve contar 1 vez (D5 idempotência)."
   local eid; eid=$(uuid)
   local body; body=$(printf '{"event_id":"%s","developer_id":"dev-stress-1","metric_type":"commits","value":1,"repository":"o/r","timestamp":"%s"}' "$eid" "$(now)")
-  for _ in $(seq 1 20); do (send_raw "$body" &); done; wait
-  info "Aguardando processamento..."
-  sleep 8
-  local n; n=$(summary_field dev-stress-1 events_processed)
-  local c; c=$(summary_field dev-stress-1 total_commits)
-  assert_eq "$n" "1" "events_processed deve ser 1"
-  assert_eq "$c" "1" "total_commits deve ser 1"
+  # send 20× em paralelo. Sem subshell () — wait precisa enxergar os jobs.
+  for _ in $(seq 1 20); do send_raw "$body" & done
+  wait
+  info "Aguardando processamento (até 30s)..."
+  local n=0
+  for i in $(seq 1 15); do
+    sleep 2
+    n=$(summary_field dev-stress-1 events_processed)
+    printf "\r  ${C_DIM}events_processed=%s (t=%ds)${C_RST}" "$n" "$((i*2))"
+    [ "$n" = "1" ] && break
+  done
+  echo
+  if [ "$n" = "0" ]; then
+    fail "events_processed=0 — nenhuma mensagem chegou ao DDB. Verifique:"
+    info "  docker logs devflow-processor 2>&1 | tail -20"
+    info "  qsize raw-events-dlq: $(qsize "$DLQ_RAW")  (se ≥ 20, processor rejeitou)"
+  else
+    local c; c=$(summary_field dev-stress-1 total_commits)
+    assert_eq "$n" "1" "events_processed deve ser 1"
+    assert_eq "$c" "1" "total_commits deve ser 1"
+  fi
 }
 
 scenario_2() {
