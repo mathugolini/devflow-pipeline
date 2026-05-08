@@ -12,7 +12,7 @@ AWS := docker run --rm --network devflow-pipeline_devflow \
   amazon/aws-cli:2.17.0 --endpoint-url=http://localstack:4566 --region us-east-1
 endif
 
-.PHONY: help up up-infra down logs ps verify-infra test-processor build-processor send-test send-bad clean test-aggregator build-aggregator logs-aggregator curl-summary curl-events seed
+.PHONY: help up up-infra down logs ps verify-infra test-processor build-processor send-test send-bad clean test-aggregator build-aggregator logs-aggregator curl-summary curl-events seed stress dashboard watch tools tools-down
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?##"};{printf "  %-18s %s\n", $$1, $$2}'
@@ -87,3 +87,22 @@ curl-events: ## curl GET /metrics/$DEV
 
 seed: ## Seed >= 20 mixed events (valid + invalid + duplicates)
 	bash scripts/seed.sh
+
+stress: ## Interactive stress / failure-scenario menu
+	bash scripts/stress.sh
+
+dashboard: ## One-shot snapshot of queues + tables + top devs
+	bash scripts/dashboard.sh
+
+watch: ## Live-refreshing dashboard (Ctrl+C to exit) — no external 'watch' needed
+	bash scripts/dashboard.sh --loop
+
+tools: ## Start visual tools (DynamoDB Admin at http://localhost:8001)
+	docker compose --profile tools up -d
+	@echo
+	@echo "  ➜ DynamoDB Admin:  http://localhost:8001"
+	@echo "  ➜ Live dashboard:  make watch"
+	@echo
+
+tools-down: ## Stop visual tools
+	docker compose --profile tools down
