@@ -37,13 +37,30 @@ else
 fi
 
 uuid() { uuidgen | tr 'A-Z' 'a-z'; }
-# Use a timestamp ~60s in the past. Avoids spurious "timestamp in the future"
-# rejections caused by Docker Desktop VM clock drift after the host laptop sleeps.
-# BSD date (macOS) uses -v; GNU date (Linux) uses -d.
+
+# Generate a timestamp using the CONTAINER's clock, minus 60s.
+# Why: Docker Desktop on macOS regularly drifts 5+ minutes from the host
+# clock after laptop sleep. The Processor enforces a 5-minute future-skew
+# tolerance, so a host-generated timestamp gets rejected as "in the future"
+# whenever drift exceeds the window. Reading the container's own clock
+# sidesteps this entirely.
 now() {
-  date -u -v-60S +%FT%TZ 2>/dev/null \
-    || date -u -d '-60 seconds' +%FT%TZ 2>/dev/null \
+  docker exec devflow-localstack date -u -d '-60 seconds' +%FT%TZ 2>/dev/null \
+    || docker exec devflow-localstack date -u +%FT%TZ 2>/dev/null \
+    || date -u -v-60S +%FT%TZ 2>/dev/null \
     || date -u +%FT%TZ
+}
+
+# One-time drift check at startup so the user knows what's happening.
+check_clock_drift() {
+  local host_t cont_t host_s cont_s diff
+  host_t=$(date -u +%s)
+  cont_t=$(docker exec devflow-localstack date -u +%s 2>/dev/null) || return 0
+  diff=$(( host_t - cont_t ))
+  if [ "${diff#-}" -gt 60 ]; then
+    echo "${C_YEL}!  clock drift detectado: host está ${diff}s à frente do container.${C_RST}"
+    echo "${C_DIM}   Stress gera timestamps via clock do container — sem impacto.${C_RST}"
+  fi
 }
 
 send_raw() {
@@ -421,6 +438,7 @@ preflight() {
 }
 
 preflight
+check_clock_drift
 
 case "${1:-}" in
   ""|menu) show_menu ;;
