@@ -161,11 +161,20 @@ TRACES=$(curl -fsS "$JAEGER_BASE/api/traces?service=devflow-aggregator&limit=30"
 N_TRACES=$(printf '%s' "$TRACES" | grep -oE '"traceID":' | wc -l | tr -d ' ')
 [ "$N_TRACES" -ge 5 ] || fail "Jaeger só registrou $N_TRACES traces para o aggregator (esperado >=5)"
 pass "Jaeger registrou $N_TRACES traces no aggregator"
-TID=$(printf '%s' "$TRACES" | grep -oE '"traceID":"[a-f0-9]+"' | head -1 | cut -d'"' -f4)
-[ -n "$TID" ] || fail "não consegui extrair um trace_id do Jaeger"
+
+# To prove cross-service propagation we need a *pipeline* trace, not
+# one of the API curl traces this very script generates. Filter Jaeger
+# for the consumer span the worker pool emits — those always start
+# with a parent context extracted from SQS MessageAttributes.
+PIPELINE_TRACES=$(curl -fsS --get "$JAEGER_BASE/api/traces" \
+  --data-urlencode "service=devflow-aggregator" \
+  --data-urlencode "operation=process processed-events" \
+  --data-urlencode "limit=10")
+TID=$(printf '%s' "$PIPELINE_TRACES" | grep -oE '"traceID":"[a-f0-9]+"' | head -1 | cut -d'"' -f4)
+[ -n "$TID" ] || fail "Jaeger sem nenhum trace de 'process processed-events' — propagação não rodou?"
 N_SERVICES=$(curl -fsS "$JAEGER_BASE/api/traces/$TID" | grep -oE '"serviceName":"[^"]+"' | sort -u | wc -l | tr -d ' ')
 [ "$N_SERVICES" -ge 2 ] || fail "trace $TID cobre $N_SERVICES serviço (esperado 2: processor + aggregator)"
-pass "trace $TID atravessa $N_SERVICES serviços (W3C traceparent via SQS)"
+pass "trace $TID atravessa $N_SERVICES serviços (W3C traceparent via SQS MessageAttributes)"
 
 # ─────────────────────────────────────────────────────────────────────
 banner 6 "$TOTAL" "Documentação da API + UIs"
