@@ -22,6 +22,18 @@ Dois serviços comunicando via SQS, persistindo em DynamoDB, expostos via API RE
 
 `make`, `aws` CLI, `jq` e `uuidgen` são opcionais — todos os scripts caem para Docker (`amazon/aws-cli`) automaticamente quando ausentes.
 
+## Caminho rápido para o avaliador
+
+3 níveis em ordem crescente de profundidade. Escolha o que faz sentido pro tempo disponível:
+
+| Comando | Tempo | O que faz |
+|---|---|---|
+| `docker compose up -d` | ~12s | Sobe a stack inteira. Cumpre o requisito do case. |
+| `make demo` | ~3 min | Sobe + popula + valida + abre Jaeger e ReDoc no browser, com narração e asserts em cada etapa. |
+| `make demo-full` | ~7 min | `make demo` + 12 cenários de stress / chaos engineering. |
+
+Pulou direto pra `make demo` se quiser experiência guiada. Para entender o que está rodando por trás, leia "Como rodar" abaixo.
+
 ## Como rodar (um único comando)
 
 ```bash
