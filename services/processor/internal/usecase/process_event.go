@@ -24,7 +24,12 @@ type ProcessEvent struct {
 
 func NewProcessEvent(p Publisher, processorID string, clock Clock) *ProcessEvent {
 	if clock == nil {
-		clock = time.Now().UTC
+		// Wrap in a closure so each call returns the *current* time. The
+		// previous form `time.Now().UTC` (without parens) is a method
+		// value bound to the time taken at startup — it would freeze the
+		// processor's clock and reject every fresh event as "future"
+		// after a few minutes of uptime.
+		clock = func() time.Time { return time.Now().UTC() }
 	}
 	return &ProcessEvent{publisher: p, clock: clock, processorID: processorID}
 }
