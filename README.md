@@ -12,8 +12,8 @@ Dois serviços comunicando via SQS, persistindo em DynamoDB, expostos via API RE
 - [x] Fase 1 — Infra (LocalStack + provisionamento automático de SQS/DynamoDB) — [doc](docs/phase-1-infrastructure.md)
 - [x] Fase 2 — Processor (validação, worker pool, graceful shutdown, Dockerfile distroless) — [doc](docs/phase-2-processor.md)
 - [x] Fase 3 — Aggregator (DynamoDB + REST API) — [doc](docs/phase-3-aggregator.md)
-- [ ] Fase 4 — Dockerfiles multi-stage + integração no compose
-- [ ] Fase 5 — Testes
+- [x] Fase 4 — Dockerfiles multi-stage (distroless `nonroot`, `CGO_ENABLED=0`, `-trimpath -ldflags="-s -w"`)
+- [x] Fase 5 — Testes (domínio + use case mockado + handlers `httptest`)
 - [x] Fase 6 — Seed e validação end-to-end (`make seed`, `make verify-e2e`)
 
 ## Pré-requisitos
