@@ -119,6 +119,38 @@ make up
 make verify-e2e   # exit 0 quando tudo passa, exit 1 com mensagem clara em qualquer falha
 ```
 
+### Tracing distribuído (OpenTelemetry)
+
+Ambos os serviços instrumentam:
+
+- HTTP server (otelhttp) — span por request entrante.
+- AWS SDK (otelaws) — spans por chamada SQS/DynamoDB com timing real.
+- SQS produtor/consumidor — spans manuais (`sqs.send processed-events`, `process processed-events`) com kind `Producer`/`Consumer`.
+- **Propagação cross-service via `MessageAttributes` da SQS** (W3C `traceparent`) — o trace_id continua o mesmo do Processor para o Aggregator.
+
+Cada log de processamento inclui o `trace_id` para pivot direto entre logs JSON e a UI do Jaeger:
+
+```
+{"msg":"processed", "event_id":"...", "trace_id":"37bd670620b77e689a8c844803fa1eb3"}
+```
+
+A boot do tracer usa as variáveis OTel padrão. Em `docker-compose.yml`:
+
+```yaml
+- OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+- OTEL_EXPORTER_OTLP_INSECURE=true
+```
+
+Endpoint vazio → tracing silenciosamente desabilitado (TracerProvider noop). Em produção, troque o endpoint para um collector OTel.
+
+```bash
+make up           # sobe Jaeger (porta 16686) + serviços com tracing ligado
+make seed
+make jaeger       # abre http://localhost:16686 no browser
+```
+
+Na UI, escolha o serviço `devflow-processor` ou `devflow-aggregator`, clique em "Find Traces" e abra qualquer trace para ver os 8 spans atravessando os dois serviços.
+
 ### Notas operacionais
 
 - **Hot partition.** `developer_id` é partition key em `developer_summary`. Em

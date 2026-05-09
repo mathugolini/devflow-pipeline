@@ -11,9 +11,16 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/mathugolini/devflow-pipeline/services/processor/internal/domain"
 	"github.com/mathugolini/devflow-pipeline/services/processor/internal/infra/queue"
 )
+
+const tracerName = "github.com/mathugolini/devflow-pipeline/services/processor"
 
 // Handler is the inbound port: takes one raw event and returns nil
 // on success, *domain.ValidationError for permanent rejections, or
@@ -147,34 +154,65 @@ func (p *Pool) runOne(id int, msg queue.Message) {
 	// SIGTERM can finish (otherwise SQS would re-deliver and the
 	// downstream queue would see a duplicate). Bounded by
 	// handlerTimeout so a stuck handler cannot block forever.
-	hctx, cancel := context.WithTimeout(context.Background(), handlerTimeout)
+	//
+	// The parent for the trace is the upstream context propagated via
+	// SQS MessageAttributes (or Background when none was set).
+	parent := msg.Context
+	if parent == nil {
+		parent = context.Background()
+	}
+	hctx, cancel := context.WithTimeout(parent, handlerTimeout)
 	defer cancel()
-	p.handle(hctx, id, msg)
+
+	hctx, span := otel.Tracer(tracerName).Start(hctx, "process raw-events",
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "aws_sqs"),
+			attribute.String("messaging.source.name", "raw-events"),
+			attribute.String("messaging.message.id", msg.MessageID),
+			attribute.String("event_id", msg.Event.EventID),
+		),
+	)
+	defer span.End()
+	p.handle(hctx, id, msg, span)
 }
 
-func (p *Pool) handle(ctx context.Context, workerID int, msg queue.Message) {
+func (p *Pool) handle(ctx context.Context, workerID int, msg queue.Message, span trace.Span) {
 	logger := p.log.With(
 		slog.String("event_id", msg.Event.EventID),
 		slog.String("message_id", msg.MessageID),
 		slog.Int("worker", workerID),
 	)
+	// Stamp the trace_id on every log line so a debugger can pivot
+	// from logs to traces without guesswork.
+	if sc := span.SpanContext(); sc.IsValid() {
+		logger = logger.With(slog.String("trace_id", sc.TraceID().String()))
+	}
 
 	err := p.handler.Execute(ctx, msg.Event)
 	switch {
 	case err == nil:
 		if delErr := p.consumer.Delete(ctx, msg.ReceiptHandle); delErr != nil {
+			span.RecordError(delErr)
+			span.SetStatus(codes.Error, "delete failed")
 			logger.Error("delete after success failed", slog.Any("err", delErr))
 			return
 		}
+		span.SetStatus(codes.Ok, "")
 		logger.Info("processed")
 	case isValidation(err):
 		// Permanent rejection: do NOT delete. SQS will redrive to DLQ
 		// after maxReceiveCount.
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "validation rejected")
+		span.SetAttributes(attribute.String("rejection_kind", "validation"))
 		logger.Warn("validation failed; leaving for DLQ redrive",
 			slog.Any("err", err))
 	default:
 		// Transient failure: do NOT delete. SQS visibility timeout will
 		// re-deliver. After maxReceiveCount the DLQ catches it.
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "transient failure")
 		logger.Error("transient failure; leaving for retry",
 			slog.Any("err", err))
 	}

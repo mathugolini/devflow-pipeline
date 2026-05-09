@@ -18,6 +18,22 @@ services:
     networks:
       - devflow
 
+  # Jaeger all-in-one — collector + UI + memory-only storage. Exposes
+  # the OTLP/HTTP receiver on 4318 (where the services send spans) and
+  # the UI on 16686. Memory storage is fine for a demo; in production
+  # you'd point the services at a real OTel collector instead.
+  jaeger:
+    image: jaegertracing/all-in-one:1.55
+    container_name: devflow-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686" # UI
+      - "4318:4318"   # OTLP/HTTP
+    networks:
+      - devflow
+    restart: unless-stopped
+
   aws-init:
     image: amazon/aws-cli:2.17.0
     container_name: devflow-aws-init
@@ -58,6 +74,10 @@ services:
       - SQS_WAIT_TIME_SECONDS=10
       - HTTP_ADDR=:8080
       - LOG_LEVEL=info
+      # OpenTelemetry: empty endpoint disables tracing. Set to
+      # http://jaeger:4318 (the bundled collector) to enable.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_EXPORTER_OTLP_INSECURE=true
     ports:
       - "8080:8080"
     networks:
@@ -84,6 +104,8 @@ services:
       - PROCESSOR_WORKERS=5
       - SQS_WAIT_TIME_SECONDS=10
       - LOG_LEVEL=info
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_EXPORTER_OTLP_INSECURE=true
     networks:
       - devflow
     restart: unless-stopped
