@@ -12,7 +12,7 @@ AWS := docker run --rm --network devflow-pipeline_devflow \
   amazon/aws-cli:2.17.0 --endpoint-url=http://localstack:4566 --region us-east-1
 endif
 
-.PHONY: help up up-infra down logs ps verify-infra test-processor build-processor send-test send-bad clean test-aggregator build-aggregator logs-aggregator curl-summary curl-events seed stress dashboard watch tools tools-down
+.PHONY: help up up-infra down logs ps verify-infra verify-e2e test-processor build-processor send-test send-bad clean test-aggregator build-aggregator logs-aggregator curl-summary curl-events seed stress dashboard watch tools tools-down
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?##"};{printf "  %-18s %s\n", $$1, $$2}'
@@ -87,6 +87,9 @@ curl-events: ## curl GET /metrics/$DEV
 
 seed: ## Seed >= 20 mixed events (valid + invalid + duplicates)
 	bash scripts/seed.sh
+
+verify-e2e: ## End-to-end smoke test (seeds, drains, asserts API + DLQ + idempotency)
+	bash scripts/verify-e2e.sh
 
 stress: ## Interactive stress / failure-scenario menu
 	bash scripts/stress.sh
