@@ -1,0 +1,279 @@
+openapi: 3.1.0
+info:
+  title: devflow-pipeline — Aggregator API
+  version: "1.0.0"
+  description: |
+    Read-only HTTP surface of the Aggregator service. Returns persisted
+    events and the per-developer materialised summary maintained by the
+    pipeline. No authentication is configured for this demo; the router
+    accepts variadic middlewares so auth can be added without refactor.
+  license:
+    name: MIT
+servers:
+  - url: http://localhost:8080
+    description: Local LocalStack-backed stack started via `make up`.
+
+tags:
+  - name: health
+    description: Liveness and dependency checks.
+  - name: metrics
+    description: Per-developer events and aggregates.
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Service health
+      description: |
+        Probes both SQS and DynamoDB with a real call (not a cached
+        flag). Returns **503** when any dependency is unreachable.
+      operationId: getHealth
+      responses:
+        "200":
+          description: All dependencies healthy.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+              examples:
+                ok:
+                  value:
+                    status: ok
+                    checks: { sqs: ok, dynamodb: ok }
+        "503":
+          description: At least one dependency is down. Body lists which.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+              examples:
+                degraded:
+                  value:
+                    status: degraded
+                    checks:
+                      sqs: ok
+                      dynamodb: "operation error DynamoDB: DescribeTable, ..."
+
+  /metrics/{developer_id}:
+    get:
+      tags: [metrics]
+      summary: List persisted events for a developer
+      description: |
+        Returns every event row stored for the given developer. Backed
+        by a Query on the `developer_id-index` GSI of the `events`
+        table — no full Scan.
+      operationId: listEventsByDeveloper
+      parameters:
+        - $ref: "#/components/parameters/DeveloperId"
+      responses:
+        "200":
+          description: Zero or more events. Empty array when the developer has none.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Event" }
+              examples:
+                two_events:
+                  value:
+                    - event_id: 550e8400-e29b-41d4-a716-446655440000
+                      developer_id: dev-1
+                      metric_type: commits
+                      value: 3
+                      repository: org/repo
+                      timestamp: "2026-04-15T10:30:00Z"
+                      processed_at: "2026-04-15T10:30:00.123456Z"
+                      processor_id: processor-1
+                    - event_id: 7f3c1a4e-2b6d-4f1a-9d8e-5c7b2a1f0d3e
+                      developer_id: dev-1
+                      metric_type: review_time_minutes
+                      value: 45
+                      repository: org/repo
+                      timestamp: "2026-04-15T11:00:00Z"
+                      processed_at: "2026-04-15T11:00:00.456789Z"
+                      processor_id: processor-1
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /metrics/{developer_id}/summary:
+    get:
+      tags: [metrics]
+      summary: Per-developer aggregated summary
+      description: |
+        Returns the materialised view kept by the Aggregator. Every
+        event of a developer increments the matching counter atomically
+        via a DynamoDB UpdateItem with ADD. The `avg_review_time_minutes`
+        is computed at read time from `total_review_time_minutes /
+        review_time_count` so summing remains additive (avg is not
+        stored — see ADR/phase-3 doc).
+      operationId: getDeveloperSummary
+      parameters:
+        - $ref: "#/components/parameters/DeveloperId"
+      responses:
+        "200":
+          description: Summary found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Summary" }
+              examples:
+                dev_1:
+                  value:
+                    developer_id: dev-1
+                    total_commits: 142
+                    total_pull_requests: 38
+                    avg_review_time_minutes: 45.2
+                    total_review_time_minutes: 1356.0
+                    review_time_count: 30
+                    events_processed: 195
+                    last_activity: "2026-04-15T10:30:00Z"
+                    updated_at: "2026-04-15T10:30:05.123Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No events have been processed for this developer yet.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                not_found:
+                  value: { error: not found }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  parameters:
+    DeveloperId:
+      name: developer_id
+      in: path
+      required: true
+      description: Identifier of the developer (matches `developer_id` field on events).
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        example: dev-1
+
+  responses:
+    BadRequest:
+      description: Path parameter missing or invalid.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            missing_dev_id:
+              value: { error: developer_id required }
+    InternalError:
+      description: Internal failure (DynamoDB unreachable, marshalling error, etc.).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            ddb_down:
+              value: { error: "operation error DynamoDB: ..." }
+
+  schemas:
+    Health:
+      type: object
+      required: [status, checks]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        checks:
+          type: object
+          additionalProperties:
+            type: string
+            description: '"ok" when the probe succeeded, otherwise the underlying error string.'
+
+    Event:
+      type: object
+      required:
+        - event_id
+        - developer_id
+        - metric_type
+        - value
+        - timestamp
+        - processed_at
+        - processor_id
+      properties:
+        event_id:
+          type: string
+          format: uuid
+        developer_id:
+          type: string
+        metric_type:
+          type: string
+          enum: [commits, pull_requests, review_time_minutes]
+        value:
+          type: number
+          minimum: 0
+          description: For `review_time_minutes`, capped at 1440 by the Processor.
+        repository:
+          type: string
+          nullable: true
+        timestamp:
+          type: string
+          format: date-time
+          description: When the event happened (set by the producer).
+        processed_at:
+          type: string
+          format: date-time
+          description: When the Processor enriched the event.
+        processor_id:
+          type: string
+          description: ID of the Processor instance that handled the event.
+
+    Summary:
+      type: object
+      required:
+        - developer_id
+        - total_commits
+        - total_pull_requests
+        - avg_review_time_minutes
+        - events_processed
+        - last_activity
+      properties:
+        developer_id:
+          type: string
+        total_commits:
+          type: integer
+          format: int64
+          minimum: 0
+        total_pull_requests:
+          type: integer
+          format: int64
+          minimum: 0
+        avg_review_time_minutes:
+          type: number
+          format: double
+          minimum: 0
+          description: Computed as `total_review_time_minutes / review_time_count`. 0 when no review_time samples exist.
+        total_review_time_minutes:
+          type: number
+          format: double
+          minimum: 0
+          description: Raw accumulator used to derive the average without storing it.
+        review_time_count:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Number of `review_time_minutes` events received.
+        events_processed:
+          type: integer
+          format: int64
+          minimum: 0
+        last_activity:
+          type: string
+          format: date-time
+          description: Highest event `timestamp` seen for this developer.
+        updated_at:
+          type: string
+          format: date-time
+          description: When the Aggregator last touched this row.
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string

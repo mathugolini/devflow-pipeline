@@ -71,6 +71,10 @@ implementação detalhada em [docs/phase-3-aggregator.md](docs/phase-3-aggregato
 | GET | `/health` | 200 ok / 503 com detalhes de SQS + DynamoDB |
 | GET | `/metrics/{developer_id}` | Lista os eventos persistidos do dev (Query no GSI `developer_id-index`) |
 | GET | `/metrics/{developer_id}/summary` | Agregado: totais + `avg_review_time_minutes` calculado no handler |
+| GET | `/openapi.yaml` | Contrato OpenAPI 3.1 (embed via `//go:embed`) |
+| GET | `/docs` | UI interativa renderizada por ReDoc (carrega o YAML acima) |
+
+Especificação fonte em [services/aggregator/internal/infra/api/openapi.yaml](services/aggregator/internal/infra/api/openapi.yaml). Editar lá → próximo build já serve a versão nova; sem geração via anotações em código.
 
 ### Exemplos
 
