@@ -143,10 +143,13 @@ echo "$EVENTS_DEV1" | grep -q '"event_id"' || fail "GET /metrics/dev-1 returned 
 pass "GET /metrics/dev-1 returns events"
 
 # ---------------------------------------------------------------------
-# 5. DLQ — invalid events should land here after maxReceiveCount=3
+# 5. DLQ — invalid events should land here after maxReceiveCount=3.
+# Each rejected message must hit the visibility timeout 3 times before
+# SQS redrives it, so the wait must cover ~3 × VisibilityTimeout. The
+# queue is provisioned with VisibilityTimeout=30s → minimum ~90s.
 # ---------------------------------------------------------------------
-step "dlq"
-dlq_deadline=$((SECONDS + 30))
+step "dlq (waits ~3x VisibilityTimeout for redrive)"
+dlq_deadline=$((SECONDS + 120))
 while [ $SECONDS -lt $dlq_deadline ]; do
   dlq_now=$(queue_attr "$DLQ_URL" ApproximateNumberOfMessages)
   delta_dlq=$((dlq_now - BASE_DLQ))
