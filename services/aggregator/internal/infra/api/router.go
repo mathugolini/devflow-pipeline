@@ -10,6 +10,8 @@ func NewRouter(h *Handler, mws ...func(http.Handler) http.Handler) http.Handler 
 	mux.HandleFunc("GET /health", h.Health)
 	mux.HandleFunc("GET /metrics/{developer_id}", h.ListEvents)
 	mux.HandleFunc("GET /metrics/{developer_id}/summary", h.Summary)
+	mux.HandleFunc("GET /openapi.yaml", h.OpenAPI)
+	mux.HandleFunc("GET /docs", h.Docs)
 
 	var handler http.Handler = mux
 	for i := len(mws) - 1; i >= 0; i-- {
