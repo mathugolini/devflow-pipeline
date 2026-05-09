@@ -14,7 +14,7 @@ Dois serviços comunicando via SQS, persistindo em DynamoDB, expostos via API RE
 - [x] Fase 3 — Aggregator (DynamoDB + REST API) — [doc](docs/phase-3-aggregator.md)
 - [ ] Fase 4 — Dockerfiles multi-stage + integração no compose
 - [ ] Fase 5 — Testes
-- [ ] Fase 6 — Seed e validação end-to-end
+- [x] Fase 6 — Seed e validação end-to-end (`make seed`, `make verify-e2e`)
 
 ## Pré-requisitos
 
@@ -83,6 +83,36 @@ curl -s http://localhost:8080/metrics/dev-1/summary
 curl -s http://localhost:8080/metrics/dev-1
 make test-aggregator                         # roda os unit tests do serviço
 make logs-aggregator                         # tail dos logs JSON
+```
+
+### Validação end-to-end
+
+`make verify-e2e` exercita o pipeline inteiro contra a stack rodando e
+falha rápido com mensagem clara se algum estágio quebrar. O script
+([scripts/verify-e2e.sh](scripts/verify-e2e.sh)) faz:
+
+1. **Pré-flight** — confere que as 4 filas, as 2 tabelas e o `/health`
+   da API respondem.
+2. **Baseline** — captura a contagem atual de `events` e da DLQ
+   `raw-events-dlq` para que o script seja seguro de re-rodar.
+3. **Seed** — chama `scripts/seed.sh` (~21 eventos: 19 válidos + 2
+   inválidos, com 1 `event_id` duplicado).
+4. **Drain** — faz polling em `raw-events` até `ApproximateNumberOfMessages`
+   e `…NotVisible` zerarem **e** a tabela `events` ter crescido `>= 19`.
+   Sem `sleep` fixo — timeout configurável via `TIMEOUT_SECONDS=`.
+5. **Assertions de persistência** — chama `GET /metrics/dev-1/summary`
+   e `…/dev-2/summary`, valida `total_commits >= 11`, `review_time_count >= 3`,
+   `avg_review_time_minutes ≈ 30`, `total_pull_requests >= 5`. Valida que
+   `GET /metrics/dev-1` lista eventos.
+6. **DLQ** — confere que `raw-events-dlq` cresceu `>= 2` (os inválidos do seed
+   após `maxReceiveCount=3`).
+7. **Idempotência ao vivo** — envia 3x o mesmo `event_id` e prova que
+   a tabela `events` cresce exatamente 1, e que o `developer_summary`
+   do dev efêmero registra `total_commits=1`, `events_processed=1`.
+
+```bash
+make up
+make verify-e2e   # exit 0 quando tudo passa, exit 1 com mensagem clara em qualquer falha
 ```
 
 ### Notas operacionais
