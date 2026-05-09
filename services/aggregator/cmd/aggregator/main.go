@@ -15,11 +15,15 @@ import (
 	"github.com/mathugolini/devflow-pipeline/services/aggregator/internal/infra/config"
 	"github.com/mathugolini/devflow-pipeline/services/aggregator/internal/infra/queue"
 	"github.com/mathugolini/devflow-pipeline/services/aggregator/internal/infra/repository"
+	"github.com/mathugolini/devflow-pipeline/services/aggregator/internal/infra/tracing"
 	"github.com/mathugolini/devflow-pipeline/services/aggregator/internal/infra/worker"
 	"github.com/mathugolini/devflow-pipeline/services/aggregator/internal/usecase"
 )
 
 const shutdownGrace = 30 * time.Second
+
+// version is stamped on every span; CI can override via -ldflags.
+var version = "dev"
 
 func main() {
 	cfg, cfgErr := config.Load()
@@ -60,6 +64,18 @@ func run(cfg config.Config, log *slog.Logger) error {
 
 	bootCtx, cancelBoot := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelBoot()
+
+	shutdownTracing, err := tracing.Init(bootCtx, "devflow-aggregator", version)
+	if err != nil {
+		return fmt.Errorf("tracing init: %w", err)
+	}
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(flushCtx); err != nil {
+			log.Warn("tracing shutdown error", slog.Any("err", err))
+		}
+	}()
 
 	sqsAPI, err := queue.NewClient(bootCtx, cfg.AWSRegion, cfg.AWSEndpointURL)
 	if err != nil {

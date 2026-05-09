@@ -30,6 +30,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws"
 
 	"github.com/mathugolini/devflow-pipeline/services/aggregator/internal/domain"
 )
@@ -51,6 +52,7 @@ func NewClient(ctx context.Context, region, endpointURL string) (*dynamodb.Clien
 	if err != nil {
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}
+	otelaws.AppendMiddlewares(&cfg.APIOptions)
 	api := dynamodb.NewFromConfig(cfg, func(o *dynamodb.Options) {
 		if endpointURL != "" {
 			o.BaseEndpoint = &endpointURL

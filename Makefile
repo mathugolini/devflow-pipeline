@@ -12,7 +12,7 @@ AWS := docker run --rm --network devflow-pipeline_devflow \
   amazon/aws-cli:2.17.0 --endpoint-url=http://localstack:4566 --region us-east-1
 endif
 
-.PHONY: help up up-infra down logs ps verify-infra verify-e2e test-processor build-processor send-test send-bad clean test-aggregator build-aggregator logs-aggregator curl-summary curl-events seed stress dashboard watch tools tools-down
+.PHONY: help up up-infra down logs ps verify-infra verify-e2e test-processor build-processor send-test send-bad clean test-aggregator build-aggregator logs-aggregator curl-summary curl-events seed stress dashboard watch tools tools-down jaeger
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?##"};{printf "  %-18s %s\n", $$1, $$2}'
@@ -21,8 +21,15 @@ up-infra: ## Start LocalStack and provision SQS/DynamoDB
 	docker compose up -d localstack
 	docker compose run --rm aws-init
 
-up: up-infra ## Start everything (infra + processor + aggregator)
+up: up-infra ## Start everything (infra + tracing + processor + aggregator)
+	docker compose up -d jaeger
 	docker compose up -d --build processor aggregator
+	@echo "  ➜ Jaeger UI:        http://localhost:16686"
+	@echo "  ➜ Aggregator API:   http://localhost:8080"
+	@echo "  ➜ API Docs (ReDoc): http://localhost:8080/docs"
+
+jaeger: ## Open the Jaeger UI in the default browser
+	@open http://localhost:16686 2>/dev/null || xdg-open http://localhost:16686 2>/dev/null || echo "Jaeger UI: http://localhost:16686"
 
 down: ## Stop and remove containers
 	docker compose down -v

@@ -1,6 +1,10 @@
 package api
 
-import "net/http"
+import (
+	"net/http"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+)
 
 // NewRouter wires the HTTP routes using Go 1.22 method-aware mux. The
 // variadic middlewares are applied in order: mws[0] is the outermost
@@ -17,5 +21,9 @@ func NewRouter(h *Handler, mws ...func(http.Handler) http.Handler) http.Handler 
 	for i := len(mws) - 1; i >= 0; i-- {
 		handler = mws[i](handler)
 	}
-	return handler
+	// Outermost wrapper: extracts trace context from incoming requests
+	// and emits a server span per request. Span name is the route
+	// pattern (set via WithRouteTag at the mux level if needed); the
+	// default — "HTTP <method>" — keeps cardinality bounded.
+	return otelhttp.NewHandler(handler, "aggregator")
 }

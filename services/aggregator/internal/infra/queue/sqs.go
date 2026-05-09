@@ -11,6 +11,8 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws"
+	"go.opentelemetry.io/otel"
 
 	"github.com/mathugolini/devflow-pipeline/services/aggregator/internal/domain"
 )
@@ -20,6 +22,7 @@ func NewClient(ctx context.Context, region, endpointURL string) (*sqs.Client, er
 	if err != nil {
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}
+	otelaws.AppendMiddlewares(&cfg.APIOptions)
 	api := sqs.NewFromConfig(cfg, func(o *sqs.Options) {
 		if endpointURL != "" {
 			o.BaseEndpoint = &endpointURL
@@ -29,10 +32,13 @@ func NewClient(ctx context.Context, region, endpointURL string) (*sqs.Client, er
 }
 
 // Message is one received SQS message paired with the parsed event.
+// Context carries the upstream trace context extracted from the SQS
+// MessageAttributes (W3C traceparent set by the Processor).
 type Message struct {
 	Event         domain.ProcessedEvent
 	ReceiptHandle string
 	MessageID     string
+	Context       context.Context
 }
 
 // Consumer long-polls processed-events.
@@ -68,15 +74,20 @@ func ResolveQueueURL(ctx context.Context, api *sqs.Client, name string) (string,
 
 // Receive long-polls once. Bodies that fail to parse are returned as
 // parseFailures so the caller can leave them for SQS DLQ redrive.
+//
+// MessageAttributeNames=["All"] is required so SQS returns the W3C
+// trace headers the producer set (otherwise SQS strips them).
 func (c *Consumer) Receive(ctx context.Context) (msgs []Message, parseFailures []types.Message, err error) {
 	out, err := c.api.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
-		QueueUrl:            &c.queueURL,
-		MaxNumberOfMessages: c.maxMessages,
-		WaitTimeSeconds:     c.waitTimeSeconds,
+		QueueUrl:              &c.queueURL,
+		MaxNumberOfMessages:   c.maxMessages,
+		WaitTimeSeconds:       c.waitTimeSeconds,
+		MessageAttributeNames: []string{"All"},
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("receive message: %w", err)
 	}
+	prop := otel.GetTextMapPropagator()
 	for _, m := range out.Messages {
 		var ev domain.ProcessedEvent
 		dec := json.NewDecoder(strings.NewReader(*m.Body))
@@ -85,10 +96,12 @@ func (c *Consumer) Receive(ctx context.Context) (msgs []Message, parseFailures [
 			parseFailures = append(parseFailures, m)
 			continue
 		}
+		msgCtx := prop.Extract(context.Background(), sqsAttrCarrier{attrs: m.MessageAttributes})
 		msgs = append(msgs, Message{
 			Event:         ev,
 			ReceiptHandle: *m.ReceiptHandle,
 			MessageID:     *m.MessageId,
+			Context:       msgCtx,
 		})
 	}
 	return msgs, parseFailures, nil

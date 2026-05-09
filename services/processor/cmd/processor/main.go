@@ -11,9 +11,15 @@ import (
 
 	"github.com/mathugolini/devflow-pipeline/services/processor/internal/infra/config"
 	"github.com/mathugolini/devflow-pipeline/services/processor/internal/infra/queue"
+	"github.com/mathugolini/devflow-pipeline/services/processor/internal/infra/tracing"
 	"github.com/mathugolini/devflow-pipeline/services/processor/internal/infra/worker"
 	"github.com/mathugolini/devflow-pipeline/services/processor/internal/usecase"
 )
+
+// version is stamped on every span via the OTel resource attributes.
+// Bumping it on releases makes it cheap to spot a bad rollout in the
+// trace UI. Static for now; CI can override via -ldflags="-X main.version=...".
+var version = "dev"
 
 // Hard cap on how long we wait for in-flight work to drain after a
 // SIGTERM/SIGINT before forcing exit. Must be larger than the maximum
@@ -53,6 +59,20 @@ func run(cfg config.Config, log *slog.Logger) error {
 
 	bootCtx, cancelBoot := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelBoot()
+
+	shutdownTracing, err := tracing.Init(bootCtx, "devflow-processor", version)
+	if err != nil {
+		return fmt.Errorf("tracing init: %w", err)
+	}
+	defer func() {
+		// Best-effort flush at shutdown. Bounded so a slow collector
+		// cannot stall the container's exit.
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(flushCtx); err != nil {
+			log.Warn("tracing shutdown error", slog.Any("err", err))
+		}
+	}()
 
 	client, err := queue.NewClient(bootCtx, cfg.AWSRegion, cfg.AWSEndpointURL)
 	if err != nil {

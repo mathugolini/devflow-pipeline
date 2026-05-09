@@ -11,9 +11,15 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/mathugolini/devflow-pipeline/services/processor/internal/domain"
 )
+
+const tracerName = "github.com/mathugolini/devflow-pipeline/services/processor"
 
 // Client wraps an AWS SQS client and resolves queue URLs.
 type Client struct {
@@ -27,6 +33,10 @@ func NewClient(ctx context.Context, region, endpointURL string) (*Client, error)
 	if err != nil {
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}
+	// otelaws appends per-AWS-call client-side spans (sqs.SendMessage,
+	// sqs.ReceiveMessage, ...). Cheap and gives us latency breakdown
+	// for free, on top of the manual producer/consumer spans below.
+	otelaws.AppendMiddlewares(&cfg.APIOptions)
 	api := sqs.NewFromConfig(cfg, func(o *sqs.Options) {
 		if endpointURL != "" {
 			o.BaseEndpoint = &endpointURL
@@ -51,11 +61,16 @@ func (c *Client) Ping(ctx context.Context) error {
 }
 
 // Message is a raw event delivered by the consumer along with the SQS
-// receipt handle the worker uses to acknowledge it.
+// receipt handle the worker uses to acknowledge it. Context carries
+// the upstream trace context extracted from MessageAttributes.
 type Message struct {
 	Event         domain.RawEvent
 	ReceiptHandle string
 	MessageID     string
+	// Context propagates the upstream trace context. May be
+	// context.Background() when no trace headers were present
+	// (e.g. messages produced by the seed script).
+	Context context.Context
 }
 
 // Consumer long-polls a queue and emits domain.RawEvent values.
@@ -77,15 +92,20 @@ func NewConsumer(c *Client, queueURL string, waitTimeSeconds int32, maxMessages 
 // successfully. Bodies that fail to parse are returned as parseFailures so
 // the caller can decide what to do (currently: leave them on the queue
 // → SQS DLQ after maxReceiveCount).
+//
+// MessageAttributeNames=["All"] is required so SQS returns the
+// W3C trace headers the producer set; SQS strips them by default.
 func (c *Consumer) Receive(ctx context.Context) (msgs []Message, parseFailures []types.Message, err error) {
 	out, err := c.api.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
-		QueueUrl:            &c.queueURL,
-		MaxNumberOfMessages: c.maxMessages,
-		WaitTimeSeconds:     c.waitTimeSeconds,
+		QueueUrl:              &c.queueURL,
+		MaxNumberOfMessages:   c.maxMessages,
+		WaitTimeSeconds:       c.waitTimeSeconds,
+		MessageAttributeNames: []string{"All"},
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("receive message: %w", err)
 	}
+	prop := otel.GetTextMapPropagator()
 	for _, m := range out.Messages {
 		var ev domain.RawEvent
 		dec := json.NewDecoder(strings.NewReader(*m.Body))
@@ -97,10 +117,12 @@ func (c *Consumer) Receive(ctx context.Context) (msgs []Message, parseFailures [
 			parseFailures = append(parseFailures, m)
 			continue
 		}
+		msgCtx := prop.Extract(context.Background(), sqsAttrCarrier{attrs: m.MessageAttributes})
 		msgs = append(msgs, Message{
 			Event:         ev,
 			ReceiptHandle: *m.ReceiptHandle,
 			MessageID:     *m.MessageId,
+			Context:       msgCtx,
 		})
 	}
 	return msgs, parseFailures, nil
@@ -128,17 +150,37 @@ func NewPublisher(c *Client, queueURL string) *Publisher {
 	return &Publisher{api: c.api, queueURL: queueURL}
 }
 
+// Publish opens a producer span, injects the W3C trace headers into
+// SQS MessageAttributes, and sends the body. The span context becomes
+// the parent of the next service's consumer span.
 func (p *Publisher) Publish(ctx context.Context, event domain.ProcessedEvent) error {
+	ctx, span := otel.Tracer(tracerName).Start(ctx, "sqs.send processed-events",
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "aws_sqs"),
+			attribute.String("messaging.destination.name", "processed-events"),
+			attribute.String("event_id", event.EventID),
+		),
+	)
+	defer span.End()
+
 	body, err := json.Marshal(event)
 	if err != nil {
+		span.RecordError(err)
 		return fmt.Errorf("marshal processed event: %w", err)
 	}
 	bodyStr := string(body)
+
+	attrs := make(map[string]types.MessageAttributeValue, 2)
+	otel.GetTextMapPropagator().Inject(ctx, sqsAttrCarrier{attrs: attrs})
+
 	_, err = p.api.SendMessage(ctx, &sqs.SendMessageInput{
-		QueueUrl:    &p.queueURL,
-		MessageBody: &bodyStr,
+		QueueUrl:          &p.queueURL,
+		MessageBody:       &bodyStr,
+		MessageAttributes: attrs,
 	})
 	if err != nil {
+		span.RecordError(err)
 		return fmt.Errorf("send message: %w", err)
 	}
 	return nil
