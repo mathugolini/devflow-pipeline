@@ -19,38 +19,54 @@ Dois serviços comunicando via SQS, persistindo em DynamoDB, expostos via API RE
 ## Pré-requisitos
 
 - Docker + Docker Compose v2
-- `make`
-- `aws` CLI (opcional, só para os comandos de verificação manual)
 
-## Subindo a infraestrutura (Fase 1)
+`make`, `aws` CLI, `jq` e `uuidgen` são opcionais — todos os scripts caem para Docker (`amazon/aws-cli`) automaticamente quando ausentes.
 
-```bash
-make up
-```
-
-O alvo:
-1. Sobe o container `localstack` e aguarda o healthcheck.
-2. Roda o container `aws-init` (one-shot) que executa `infra/localstack/init-aws.sh`, criando filas e tabelas. O script é idempotente.
-
-### Verificando
+## Como rodar (um único comando)
 
 ```bash
-make verify-infra
+docker compose up -d
 ```
 
-Saída esperada: 4 filas (`raw-events`, `raw-events-dlq`, `processed-events`, `processed-events-dlq`), 2 tabelas (`events`, `developer_summary`) e a `RedrivePolicy` da `raw-events` apontando para a DLQ com `maxReceiveCount=3`.
+Isso é tudo. O `depends_on` orquestra a sequência:
 
-### Derrubando
+1. `localstack` sobe e fica `healthy`.
+2. `aws-init` (one-shot) roda `infra/localstack/init-aws.sh` — cria as 4 filas SQS (com `RedrivePolicy maxReceiveCount=3`) e as 2 tabelas DynamoDB (`events` com GSI + TTL, `developer_summary`). Idempotente.
+3. `processor` e `aggregator` só sobem depois que o `aws-init` terminou com sucesso.
+4. `jaeger` sobe em paralelo, expondo collector OTLP/HTTP em `:4318` e UI em `:16686`.
+
+Boot completo em ~12s. URLs expostos:
+
+| Serviço | URL |
+| --- | --- |
+| API REST do Aggregator | http://localhost:8080 |
+| Documentação interativa (ReDoc) | http://localhost:8080/docs |
+| Tracing UI (Jaeger) | http://localhost:16686 |
+| LocalStack endpoint | http://localhost:4566 |
+
+### Verificando que subiu certo
 
 ```bash
-make down
+make verify-infra      # lista filas + tabelas
+docker compose ps      # 5 containers up + aws-init exited(0)
 ```
+
+### Para derrubar
+
+```bash
+docker compose down -v
+```
+
+### Atalhos via Makefile
+
+`make up` é equivalente a `docker compose up -d` mais um `echo` dos URLs no final.
+`make help` lista todos os outros alvos (`seed`, `verify-e2e`, `stress`, `logs`, `tools`, …).
 
 ## Decisões de design (vivo)
 
 - **Dois `go.mod`** (um por serviço) — força contrato explícito via JSON na fila, sem acoplamento por pacote compartilhado.
 - **`init-aws.sh` em container `aws-init` separado**, não em hook do LocalStack — isola o provisionamento, é idempotente e dá feedback claro no `docker compose`.
-- **`PERSISTENCE=0`** no LocalStack — cada `make up` parte de estado limpo. Simplifica demonstração.
+- **`PERSISTENCE=0`** no LocalStack — cada `docker compose up` parte de estado limpo. Simplifica demonstração.
 - **DLQ + `maxReceiveCount=3`** cuidam do retry de mensagens inválidas — o código Go não reimplementa essa lógica. Retry com backoff no código fica reservado para falhas de infraestrutura (SDK errors).
 
 ## Aggregator (Fase 3)
@@ -79,14 +95,14 @@ Especificação fonte em [services/aggregator/internal/infra/api/openapi.yaml](s
 ### Exemplos
 
 ```bash
-make up                                      # infra + processor + aggregator
-make seed                                    # ~21 eventos (válidos + inválidos + duplicado)
+docker compose up -d                         # ou `make up`
+bash scripts/seed.sh                         # ou `make seed` — ~21 eventos mistos
 sleep 5
 curl -s http://localhost:8080/health
 curl -s http://localhost:8080/metrics/dev-1/summary
 curl -s http://localhost:8080/metrics/dev-1
-make test-aggregator                         # roda os unit tests do serviço
-make logs-aggregator                         # tail dos logs JSON
+cd services/aggregator && go test ./...      # ou `make test-aggregator`
+docker compose logs -f aggregator            # ou `make logs-aggregator`
 ```
 
 ### Validação end-to-end
@@ -115,8 +131,8 @@ falha rápido com mensagem clara se algum estágio quebrar. O script
    do dev efêmero registra `total_commits=1`, `events_processed=1`.
 
 ```bash
-make up
-make verify-e2e   # exit 0 quando tudo passa, exit 1 com mensagem clara em qualquer falha
+docker compose up -d        # ou `make up`
+make verify-e2e             # exit 0 quando tudo passa, exit 1 com mensagem clara em qualquer falha
 ```
 
 ### Tracing distribuído (OpenTelemetry)
@@ -144,9 +160,9 @@ A boot do tracer usa as variáveis OTel padrão. Em `docker-compose.yml`:
 Endpoint vazio → tracing silenciosamente desabilitado (TracerProvider noop). Em produção, troque o endpoint para um collector OTel.
 
 ```bash
-make up           # sobe Jaeger (porta 16686) + serviços com tracing ligado
-make seed
-make jaeger       # abre http://localhost:16686 no browser
+docker compose up -d          # sobe Jaeger (16686) + serviços com tracing ligado
+bash scripts/seed.sh
+open http://localhost:16686   # ou `make jaeger`
 ```
 
 Na UI, escolha o serviço `devflow-processor` ou `devflow-aggregator`, clique em "Find Traces" e abra qualquer trace para ver os 8 spans atravessando os dois serviços.
