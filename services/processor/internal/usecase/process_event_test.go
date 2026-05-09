@@ -87,6 +87,20 @@ func TestProcessEvent_Execute_ValidationError(t *testing.T) {
 	}
 }
 
+// TestProcessEvent_DefaultClock_DoesNotFreeze guards against the regression
+// where `clock = time.Now().UTC` (no parens) captured a single instant at
+// startup and made the validator reject every fresh event as "future" once
+// the process had been up longer than AllowedFutureSkew.
+func TestProcessEvent_DefaultClock_DoesNotFreeze(t *testing.T) {
+	uc := NewProcessEvent(&fakePublisher{}, "p", nil)
+	t1 := uc.clock()
+	time.Sleep(20 * time.Millisecond)
+	t2 := uc.clock()
+	if !t2.After(t1) {
+		t.Fatalf("default clock froze: t1=%s t2=%s", t1, t2)
+	}
+}
+
 func TestProcessEvent_Execute_PublishFailureIsTransient(t *testing.T) {
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	boom := errors.New("sqs unavailable")
