@@ -77,7 +77,10 @@ func run(cfg config.Config, log *slog.Logger) error {
 	}
 	repo := repository.New(ddbAPI, cfg.EventsTable, cfg.SummaryTable)
 
-	uc := usecase.New(repo, nil)
+	// The single DynamoDB struct satisfies both EventRepository and
+	// SummaryRepository — wired separately to make the dependencies
+	// explicit at the use case boundary.
+	uc := usecase.New(repo, repo, nil)
 	pool := worker.New(consumer, uc, cfg.Workers, log)
 
 	handler := api.NewHandler(repo, &pinger{consumer: consumer, repo: repo})

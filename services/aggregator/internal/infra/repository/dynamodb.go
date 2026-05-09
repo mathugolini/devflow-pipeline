@@ -1,7 +1,22 @@
-// Package repository implements the aggregator's persistence port
-// against DynamoDB. The write path uses TransactWriteItems so the
-// events.PutItem and developer_summary.UpdateItem either both apply
-// or neither does — see D5.
+// Package repository implements the aggregator's persistence ports
+// against DynamoDB.
+//
+// The repo exposes two operations matching the use case's split:
+//   - SaveEvent: PutItem on the events table with a conditional
+//     attribute_not_exists(event_id). Duplicates surface as
+//     domain.AlreadyProcessedError and the use case treats them as a
+//     successful (deletable) outcome.
+//   - UpdateSummary: atomic UpdateItem on developer_summary using ADD
+//     for the counter deltas.
+//
+// Trade-off vs. a single TransactWriteItems: with two separate calls,
+// if SaveEvent succeeds and UpdateSummary fails, the SQS message is
+// not deleted and gets redelivered. On the retry, SaveEvent returns
+// AlreadyProcessed and the summary update is skipped — that single
+// event's contribution is lost. Acceptable for this exercise; in
+// production we would either (a) use TransactWriteItems, or (b) mark
+// summary_applied=true on the event row only after UpdateSummary
+// succeeds and re-drive the update on retries when that flag is false.
 package repository
 
 import (
@@ -19,12 +34,14 @@ import (
 	"github.com/mathugolini/devflow-pipeline/services/aggregator/internal/domain"
 )
 
-// DynamoDB is the concrete Repository.
+// DynamoDB is the concrete repository. It implements both
+// usecase.EventRepository and usecase.SummaryRepository.
 type DynamoDB struct {
 	api          *dynamodb.Client
 	eventsTable  string
 	summaryTable string
 	gsiName      string
+	clock        func() time.Time
 }
 
 // NewClient builds a DynamoDB client respecting an optional endpoint
@@ -48,17 +65,38 @@ func New(api *dynamodb.Client, eventsTable, summaryTable string) *DynamoDB {
 		eventsTable:  eventsTable,
 		summaryTable: summaryTable,
 		gsiName:      "developer_id-index",
+		clock:        func() time.Time { return time.Now().UTC() },
 	}
 }
 
-// PersistAndAggregate writes the event row and the summary update in
-// a single DynamoDB transaction. If the event already existed, it
-// returns nil (idempotent retry).
-func (r *DynamoDB) PersistAndAggregate(ctx context.Context, rec domain.EventRecord, inc domain.SummaryIncrements) error {
+// SaveEvent persists the event row with a conditional write. Returns
+// *domain.AlreadyProcessedError when the event_id was already stored
+// (idempotent retry path).
+func (r *DynamoDB) SaveEvent(ctx context.Context, evt domain.ProcessedEvent) error {
+	rec := evt.ToRecord()
 	item, err := attributevalue.MarshalMap(rec)
 	if err != nil {
 		return fmt.Errorf("marshal event: %w", err)
 	}
+	_, err = r.api.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:           aws.String(r.eventsTable),
+		Item:                item,
+		ConditionExpression: aws.String("attribute_not_exists(event_id)"),
+	})
+	if err != nil {
+		var ccf *ddbtypes.ConditionalCheckFailedException
+		if errors.As(err, &ccf) {
+			return &domain.AlreadyProcessedError{EventID: rec.EventID}
+		}
+		return fmt.Errorf("put event: %w", err)
+	}
+	return nil
+}
+
+// UpdateSummary applies the per-event ADD deltas to the developer's
+// summary row in a single UpdateItem.
+func (r *DynamoDB) UpdateSummary(ctx context.Context, evt domain.ProcessedEvent) error {
+	inc := domain.IncrementsFor(evt, r.clock())
 
 	now := inc.Now.UTC().Format(time.RFC3339Nano)
 	ts := inc.EventTimestamp.UTC().Format(time.RFC3339Nano)
@@ -68,9 +106,7 @@ func (r *DynamoDB) PersistAndAggregate(ctx context.Context, rec domain.EventReco
 		"events_processed :one " +
 		// last_activity is set unconditionally to the event's timestamp.
 		// Trade-off: under heavy concurrent out-of-order writes this can
-		// momentarily go backwards. Acceptable for the demo; in prod we'd
-		// use a conditional expression `:ts > last_activity` outside the
-		// transaction or store last_activity_epoch + use ADD with max.
+		// momentarily go backwards. Acceptable for the demo.
 		"SET last_activity = :ts, updated_at = :now"
 
 	exprValues := map[string]ddbtypes.AttributeValue{
@@ -78,55 +114,27 @@ func (r *DynamoDB) PersistAndAggregate(ctx context.Context, rec domain.EventReco
 		":inc_pr":  &ddbtypes.AttributeValueMemberN{Value: itoa(inc.PullRequests)},
 		":inc_rtm": &ddbtypes.AttributeValueMemberN{Value: ftoa(inc.ReviewTimeMinutes)},
 		":inc_rtc": &ddbtypes.AttributeValueMemberN{Value: itoa(inc.ReviewTimeCount)},
-		":one":    &ddbtypes.AttributeValueMemberN{Value: "1"},
-		":ts":     &ddbtypes.AttributeValueMemberS{Value: ts},
-		":now":    &ddbtypes.AttributeValueMemberS{Value: now},
+		":one":     &ddbtypes.AttributeValueMemberN{Value: "1"},
+		":ts":      &ddbtypes.AttributeValueMemberS{Value: ts},
+		":now":     &ddbtypes.AttributeValueMemberS{Value: now},
 	}
 
-	input := &dynamodb.TransactWriteItemsInput{
-		TransactItems: []ddbtypes.TransactWriteItem{
-			{
-				Put: &ddbtypes.Put{
-					TableName:           aws.String(r.eventsTable),
-					Item:                item,
-					ConditionExpression: aws.String("attribute_not_exists(event_id)"),
-				},
-			},
-			{
-				Update: &ddbtypes.Update{
-					TableName: aws.String(r.summaryTable),
-					Key: map[string]ddbtypes.AttributeValue{
-						"developer_id": &ddbtypes.AttributeValueMemberS{Value: rec.DeveloperID},
-					},
-					UpdateExpression:          aws.String(updateExpr),
-					ExpressionAttributeValues: exprValues,
-				},
-			},
+	_, err := r.api.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.summaryTable),
+		Key: map[string]ddbtypes.AttributeValue{
+			"developer_id": &ddbtypes.AttributeValueMemberS{Value: evt.DeveloperID},
 		},
-	}
-
-	_, err = r.api.TransactWriteItems(ctx, input)
+		UpdateExpression:          aws.String(updateExpr),
+		ExpressionAttributeValues: exprValues,
+	})
 	if err != nil {
-		var canceled *ddbtypes.TransactionCanceledException
-		if errors.As(err, &canceled) {
-			// CancellationReasons[0] corresponds to TransactItems[0]
-			// (the conditional Put on events). If it's a
-			// ConditionalCheckFailed, the event already existed →
-			// idempotent retry, return nil.
-			if len(canceled.CancellationReasons) > 0 {
-				code := canceled.CancellationReasons[0].Code
-				if code != nil && *code == "ConditionalCheckFailed" {
-					return nil
-				}
-			}
-		}
-		return fmt.Errorf("transact write: %w", err)
+		return fmt.Errorf("update summary: %w", err)
 	}
 	return nil
 }
 
-// ListEventsByDeveloper queries the developer_id GSI.
-func (r *DynamoDB) ListEventsByDeveloper(ctx context.Context, developerID string) ([]domain.EventRecord, error) {
+// ListByDeveloper queries the developer_id GSI on the events table.
+func (r *DynamoDB) ListByDeveloper(ctx context.Context, developerID string) ([]domain.EventRecord, error) {
 	out, err := r.api.Query(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String(r.eventsTable),
 		IndexName:              aws.String(r.gsiName),
@@ -179,5 +187,5 @@ func (r *DynamoDB) HealthEvents(ctx context.Context) error {
 	return err
 }
 
-func itoa(v int64) string  { return fmt.Sprintf("%d", v) }
+func itoa(v int64) string   { return fmt.Sprintf("%d", v) }
 func ftoa(v float64) string { return fmt.Sprintf("%g", v) }
