@@ -15,9 +15,10 @@ import (
 	"github.com/mathugolini/devflow-pipeline/services/aggregator/internal/domain"
 )
 
-// Reader is the inbound port for the API.
+// Reader is the inbound port for the API. It maps to the read-side of
+// the EventRepository + SummaryRepository pair.
 type Reader interface {
-	ListEventsByDeveloper(ctx context.Context, developerID string) ([]domain.EventRecord, error)
+	ListByDeveloper(ctx context.Context, developerID string) ([]domain.EventRecord, error)
 	GetSummary(ctx context.Context, developerID string) (domain.DeveloperSummary, bool, error)
 }
 
@@ -78,7 +79,7 @@ func (h *Handler) ListEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "developer_id required")
 		return
 	}
-	recs, err := h.reader.ListEventsByDeveloper(r.Context(), dev)
+	recs, err := h.reader.ListByDeveloper(r.Context(), dev)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

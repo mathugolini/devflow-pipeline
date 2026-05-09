@@ -21,7 +21,7 @@ type fakeReader struct {
 	summaryErr error
 }
 
-func (f *fakeReader) ListEventsByDeveloper(_ context.Context, _ string) ([]domain.EventRecord, error) {
+func (f *fakeReader) ListByDeveloper(_ context.Context, _ string) ([]domain.EventRecord, error) {
 	return f.events, f.listErr
 }
 func (f *fakeReader) GetSummary(_ context.Context, _ string) (domain.DeveloperSummary, bool, error) {
