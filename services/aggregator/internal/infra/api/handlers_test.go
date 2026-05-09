@@ -96,7 +96,10 @@ func TestListEvents(t *testing.T) {
 	t.Run("empty list returns []", func(t *testing.T) {
 		empty := newServer(&fakeReader{events: nil}, &fakePinger{})
 		defer empty.Close()
-		resp, _ := http.Get(empty.URL + "/metrics/dev-2")
+		resp, err := http.Get(empty.URL + "/metrics/dev-2")
+		if err != nil {
+			t.Fatal(err)
+		}
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
 			t.Errorf("want 200 got %d", resp.StatusCode)
@@ -112,7 +115,10 @@ func TestSummary(t *testing.T) {
 	t.Run("not found", func(t *testing.T) {
 		srv := newServer(&fakeReader{found: false}, &fakePinger{})
 		defer srv.Close()
-		resp, _ := http.Get(srv.URL + "/metrics/dev-1/summary")
+		resp, err := http.Get(srv.URL + "/metrics/dev-1/summary")
+		if err != nil {
+			t.Fatal(err)
+		}
 		defer resp.Body.Close()
 		if resp.StatusCode != 404 {
 			t.Errorf("want 404 got %d", resp.StatusCode)
@@ -131,7 +137,10 @@ func TestSummary(t *testing.T) {
 			ReviewTimeCount:        0,
 		}}, &fakePinger{})
 		defer srv.Close()
-		resp, _ := http.Get(srv.URL + "/metrics/dev-1/summary")
+		resp, err := http.Get(srv.URL + "/metrics/dev-1/summary")
+		if err != nil {
+			t.Fatal(err)
+		}
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
 			t.Fatalf("want 200 got %d", resp.StatusCode)
@@ -153,7 +162,10 @@ func TestSummary(t *testing.T) {
 			ReviewTimeCount:        3,
 		}}, &fakePinger{})
 		defer srv.Close()
-		resp, _ := http.Get(srv.URL + "/metrics/dev-1/summary")
+		resp, err := http.Get(srv.URL + "/metrics/dev-1/summary")
+		if err != nil {
+			t.Fatal(err)
+		}
 		defer resp.Body.Close()
 		var body map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&body)

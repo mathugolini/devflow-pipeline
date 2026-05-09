@@ -12,7 +12,18 @@ AWS := docker run --rm --network devflow-pipeline_devflow \
   amazon/aws-cli:2.17.0 --endpoint-url=http://localstack:4566 --region us-east-1
 endif
 
-.PHONY: help up up-infra down logs ps verify-infra verify-e2e test-processor build-processor send-test send-bad clean test-aggregator build-aggregator logs-aggregator curl-summary curl-events seed stress dashboard watch tools tools-down jaeger
+# golangci-lint: prefer the local binary, else run the official image.
+# Each service has its own go.mod so the linter must run with the
+# matching directory as cwd. The `lint-runner` make function takes a
+# service name and produces the right command for either path.
+GOLANGCI_LOCAL := $(shell command -v golangci-lint 2>/dev/null)
+ifdef GOLANGCI_LOCAL
+lint-runner = cd services/$(1) && golangci-lint run ./...
+else
+lint-runner = docker run --rm -v $(PWD):/app -w /app/services/$(1) golangci/golangci-lint:v2.2.2 golangci-lint run ./...
+endif
+
+.PHONY: help up up-infra down logs ps verify-infra verify-e2e test test-processor test-aggregator lint build-processor build-aggregator send-test send-bad clean logs-aggregator curl-summary curl-events seed stress dashboard watch tools tools-down jaeger demo demo-full
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?##"};{printf "  %-18s %s\n", $$1, $$2}'
@@ -76,8 +87,17 @@ send-bad: ## Send an invalid event (will end up in raw-events-dlq after 3 attemp
 clean: down ## Tear down everything
 	rm -rf .localstack volume bin
 
+test: test-processor test-aggregator ## Run all unit tests
+
 test-aggregator: ## Run unit tests for the aggregator service
 	cd services/aggregator && go test ./...
+
+lint: ## Static analysis on both services (errcheck, govet, staticcheck, ineffassign, unused)
+	@echo "==> linting processor"
+	@$(call lint-runner,processor)
+	@echo "==> linting aggregator"
+	@$(call lint-runner,aggregator)
+	@echo "==> lint clean"
 
 build-aggregator: ## Build the aggregator binary locally
 	cd services/aggregator && go build -o ../../bin/aggregator ./cmd/aggregator
@@ -97,6 +117,12 @@ seed: ## Seed >= 20 mixed events (valid + invalid + duplicates)
 
 verify-e2e: ## End-to-end smoke test (seeds, drains, asserts API + DLQ + idempotency)
 	bash scripts/verify-e2e.sh
+
+demo: ## Narrated demo (~3 min): up + seed + verify + tracing checks + open URLs
+	bash scripts/demo.sh
+
+demo-full: ## demo + 12 stress scenarios (~7 min)
+	bash scripts/demo.sh --full
 
 stress: ## Interactive stress / failure-scenario menu
 	bash scripts/stress.sh

@@ -1,0 +1,32 @@
+# golangci-lint config shared by both services. The set is deliberately
+# small: linters that catch real bugs (errcheck, govet, staticcheck) +
+# basic hygiene (ineffassign, unused). No style/cosmetic linters — those
+# create noise without preventing defects.
+version: "2"
+
+run:
+  timeout: 3m
+
+linters:
+  default: none
+  enable:
+    - errcheck     # unchecked errors
+    - govet        # suspicious constructs
+    - ineffassign  # ineffective assignments
+    - staticcheck  # ~150 high-signal checks
+    - unused       # unused code
+
+  settings:
+    errcheck:
+      # We intentionally swallow Close errors on Read paths and Encode
+      # errors on best-effort response writes. Both fail closed elsewhere.
+      exclude-functions:
+        - (io.Closer).Close
+        - (encoding/json.*Encoder).Encode
+
+  exclusions:
+    rules:
+      # Tests can use t.Fatal-style assertions and don't need to check
+      # every error from helpers.
+      - path: _test\.go
+        linters: [errcheck]
